@@ -59,8 +59,8 @@ getSLEB128 =
         if testBit byte 7 then
             go temp (shift + 7)
          else
-            if shift < 32  && testBit byte 6 then
-                pure $ fromIntegral $ temp .|. ((-1) `shiftL` shift)
+            if testBit byte 6 then
+                pure $ fromIntegral $ temp .|. ((-1) `shiftL` (shift + 7))
              else
                 pure $ fromIntegral temp
     in go 0 0
