@@ -1,12 +1,13 @@
 module Data.Dwarf.OP where
 
 import Control.Applicative (Applicative(..), (<$>))
-import Data.Binary.Get (getWord8, Get)
+import Data.Binary.Get (getWord8, Get, isEmpty)
 import Data.Dwarf.Reader
 import Data.Dwarf.Utils
 import Data.Int (Int8, Int16, Int32, Int64)
 import Data.Word (Word8, Word16, Word32, Word64)
 import qualified Data.ByteString as B
+import Control.Monad.Loops as Loops
 
 data DW_OP
     = DW_OP_addr Word64
@@ -70,8 +71,12 @@ data DW_OP
     | DW_OP_bit_piece Word64 Word64
     deriving (Eq, Ord, Read, Show)
 -- | Parse a ByteString into a DWARF opcode. This will be needed for further decoding of DIE attributes.
-parseDW_OP :: Reader -> B.ByteString -> DW_OP
-parseDW_OP = strictGet . getDW_OP
+parseDW_OP :: Reader -> B.ByteString -> [DW_OP]
+parseDW_OP = strictGet . getDW_OPs
+
+getDW_OPs :: Reader -> Get [DW_OP]
+getDW_OPs = Loops.whileM (fmap not $ isEmpty) . getDW_OP
+
 getDW_OP :: Reader -> Get DW_OP
 getDW_OP dr = getWord8 >>= getDW_OP_
   where
