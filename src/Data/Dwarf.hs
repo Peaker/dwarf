@@ -12,10 +12,11 @@ module Data.Dwarf
   , parsePubnames
   , parsePubtypes
   , Range(..), parseRanges, parseLoc
+  , RangeEnd(..)
   , DW_CFA(..)
   , DW_MACINFO(..), parseMacInfo
   , DW_CIEFDE(..), parseFrame
-  , DW_OP(..), parseDW_OP
+  , DW_OP(..), parseDW_OP, parseDW_OPs
   , DW_TAG(..)
   , DW_AT(..)
   , DW_ATVAL(..)
@@ -286,6 +287,7 @@ parseFrame endianess target64 =
   strictGet . getWhileNotEmpty $ getCIEFDE endianess target64
 
 newtype RangeEnd = RangeEnd Word64
+                   deriving Show
 
 -- Section 7.23 - Non-contiguous Address Ranges
 -- | Retrieves the non-contiguous address ranges for a compilation unit from a given substring of the .debug_ranges section. The offset

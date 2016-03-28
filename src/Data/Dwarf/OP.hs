@@ -1,7 +1,7 @@
 module Data.Dwarf.OP where
 
 import Control.Applicative (Applicative(..), (<$>))
-import Data.Binary.Get (getWord8, Get)
+import Data.Binary.Get (getWord8, Get, getByteString)
 import Data.Dwarf.Reader
 import Data.Dwarf.Utils
 import Data.Int (Int8, Int16, Int32, Int64)
@@ -68,10 +68,18 @@ data DW_OP
     | DW_OP_form_tls_address
     | DW_OP_call_frame_cfa
     | DW_OP_bit_piece Word64 Word64
+    | DW_OP_implicit_value B.ByteString -- FIXME: maybe this could be Word64 etc.?
+    | DW_OP_stack_value 
     deriving (Eq, Ord, Read, Show)
+             
 -- | Parse a ByteString into a DWARF opcode. This will be needed for further decoding of DIE attributes.
 parseDW_OP :: Reader -> B.ByteString -> DW_OP
 parseDW_OP = strictGet . getDW_OP
+
+-- | Parse a ByteString into a DWARF opcode expression (sequence of ops).
+parseDW_OPs :: Reader -> B.ByteString -> [DW_OP]
+parseDW_OPs = strictGet . getWhileNotEmpty . getDW_OP
+
 getDW_OP :: Reader -> Get DW_OP
 getDW_OP dr = getWord8 >>= getDW_OP_
   where
@@ -228,5 +236,9 @@ getDW_OP dr = getWord8 >>= getDW_OP_
     getDW_OP_ 0x9b = pure DW_OP_form_tls_address
     getDW_OP_ 0x9c = pure DW_OP_call_frame_cfa
     getDW_OP_ 0x9d = pure DW_OP_bit_piece <*> getULEB128 <*> getULEB128
+    getDW_OP_ 0x9e = do len <- getULEB128
+                        pure DW_OP_implicit_value <*> getByteString (fromIntegral len)
+    getDW_OP_ 0x9f = pure DW_OP_stack_value
+
     getDW_OP_ n | 0xe0 <= n && n <= 0xff = fail $ "User DW_OP data requires extension of parser for code " ++ show n
     getDW_OP_ n = fail $ "Unrecognized DW_OP code " ++ show n
