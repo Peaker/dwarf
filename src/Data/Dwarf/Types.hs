@@ -1,12 +1,19 @@
 module Data.Dwarf.Types where
 
 import Data.Word (Word64)
+import Data.List (stripPrefix)
 
 newtype DieID = DieID Word64
   deriving (Eq, Ord)
 
 instance Show DieID where
   show (DieID x) = "DIE@" ++ show x
+
+instance Read DieID where
+  readsPrec p str =
+    case stripPrefix "DIE@" str of
+      Just rest -> [ (DieID x, y) | (x, y) <- readsPrec p rest ]
+      Nothing   -> []
 
 data DW_DS
     = DW_DS_unsigned
