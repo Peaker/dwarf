@@ -2,42 +2,41 @@
 -- | Parses the DWARF 2 and DWARF 3 specifications at http://www.dwarfstd.org given
 -- the debug sections in ByteString form.
 module Data.Dwarf
-  ( Endianess(..), TargetSize(..)
+  ( Encoding(..), Endianess(..), TargetSize(..)
   , Sections(..)
   , parseInfo
-  , DieID, dieID, DIE(..), (!?)
+  , DieID(..), dieID, DIE(..), (!?)
   , DIERefs(..), DIEMap
-  , Reader(..)
+  , Reader(..), drEndianess, drEncoding
+  , desrGetOffset
   , parseAranges
   , parsePubnames
   , parsePubtypes
+  , CUContext(..)
   , Range(..), parseRanges, parseLoc
   , RangeEnd(..)
   , DW_CFA(..)
   , DW_MACINFO(..), parseMacInfo
   , DW_CIEFDE(..), parseFrame
-  , DW_OP(..), parseDW_OP, parseDW_OPs
-  , DW_TAG(..)
-  , DW_AT(..)
-  , DW_ATVAL(..)
-  , DW_LNE(..), parseLNE
-  , DW_ATE(..), dw_ate
-  , DW_DS(..), dw_ds
-  , DW_END(..), dw_end
-  , DW_ACCESS(..), dw_access
-  , DW_VIS(..), dw_vis
-  , DW_VIRTUALITY(..), dw_virtuality
-  , DW_LANG(..), dw_lang
-  , DW_ID(..), dw_id
-  , DW_INL(..), dw_inl
-  , DW_CC(..), dw_cc
-  , DW_ORD(..), dw_ord
-  , DW_DSC(..), dw_dsc
+  , DW_OP(..), parseDW_OP, parseDW_OPs, getDW_OP
+  , module Data.Dwarf.AT
+  , module Data.Dwarf.TAG
+  , module Data.Dwarf.Types
+  , DW_LNE(..), parseLNE, getLNE
+  , DW_ATE(..), dw_ate, get_dw_ate
+  , DW_DS(..)
+  , DW_END(..)
+  , DW_ACCESS(..)
+  , DW_VIS(..)
+  , DW_VIRTUALITY(..)
+  , DW_ID(..)
+  , DW_INL(..)
+  , DW_CC(..)
+  , DW_ORD(..)
+  , DW_DSC(..)
   ) where
 
-import Control.Applicative (Applicative(..), (<$>), (<$))
 import Control.Arrow ((&&&), (***))
-import Control.Monad ((<=<))
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Writer (WriterT(..))
 import Data.Binary (Get)
@@ -54,7 +53,6 @@ import Data.Dwarf.Types
 import Data.Dwarf.Utils
 import Data.Int (Int64)
 import Data.Maybe (listToMaybe)
-import Data.Traversable (traverse)
 import Data.Word (Word64)
 import qualified Control.Monad.Trans.Writer as Writer
 import qualified Data.Binary.Get as Get
@@ -74,12 +72,14 @@ inCU (CUOffset base) x = DieID $ base + fromIntegral x
 
 data Sections = Sections
   { dsInfoSection :: B.ByteString
+    -- ^ ".debug_info section"
   , dsAbbrevSection :: B.ByteString
   , dsStrSection :: B.ByteString
   }
 
 data CUContext = CUContext
   { cuOffset :: CUOffset
+    -- ^ Offset .debug_info section
   , cuAbbrevMap :: M.Map AbbrevId DW_ABBREV
   , cuReader :: Reader
   , cuSections :: Sections
@@ -116,7 +116,7 @@ getAbbrevList =
       attrForms <- getAttrFormList
       pure $ DW_ABBREV abbrev tag children attrForms
     getAttrFormList =
-      (fmap . map) (dw_at *** dw_form) . whileM (/= (0,0)) $
+      (fmap . map) (DW_AT *** dw_form) . whileM (/= (0,0)) $
       (,) <$> getULEB128 <*> getULEB128
 
 
@@ -128,15 +128,15 @@ getAbbrevList =
 (!?) :: DIE -> DW_AT -> [DW_ATVAL]
 (!?) die at = map snd $ filter ((== at) . fst) $ dieAttributes die
 
-getNonZeroOffset :: Reader -> Get (Maybe Word64)
-getNonZeroOffset dr = do
-  offset <- drGetOffset dr
+getNonZeroOffset :: Endianess -> Encoding -> Get (Maybe Word64)
+getNonZeroOffset end enc = do
+  offset <- desrGetOffset end enc
   pure $ if offset == 0 then Nothing else Just offset
 
 -- Section 7.19 - Name Lookup Tables
-getNameLookupEntries :: Reader -> CUOffset -> Get [(String, [DieID])]
-getNameLookupEntries dr cu_offset =
-  whileJust $ traverse getEntry =<< getNonZeroOffset dr
+getNameLookupEntries :: Endianess -> Encoding -> CUOffset -> Get [(String, [DieID])]
+getNameLookupEntries end enc cu_offset = do
+  whileJust $ traverse getEntry =<< getNonZeroOffset end enc
   where
     getEntry die_offset = do
       name <- getUTF8Str0
@@ -144,32 +144,29 @@ getNameLookupEntries dr cu_offset =
 
 -- The headers for "Section 7.19 Name Lookup Table", and "Section 7.20
 -- Address Range Table" are very similar, this is the common format:
-getTableHeader :: TargetSize -> EndianReader -> Get (Reader, CUOffset)
-getTableHeader target64 der = do
-  (desr, _) <- getUnitLength der
-  let dr = reader target64 desr
-  _version <- drGetW16 dr
-  cu_offset <- drGetOffset dr
-  return (dr, CUOffset cu_offset)
+getTableHeader :: Endianess -> Get (Encoding, CUOffset)
+getTableHeader endianess = do
+  (enc, _) <- getDwarfSize endianess
+  _version <- derGetW16 endianess
+  cu_offset <- desrGetOffset endianess enc
+  return (enc, CUOffset cu_offset)
 
-getNameLookupTable :: TargetSize -> EndianReader -> Get [M.Map String [DieID]]
-getNameLookupTable target64 der = getWhileNotEmpty $ do
-  (dr, cu_offset) <- getTableHeader target64 der
-  _debug_info_length <- drGetOffset dr
-  M.fromListWith (++) <$> getNameLookupEntries dr cu_offset
+getNameLookupTable :: Endianess -> Get [M.Map String [DieID]]
+getNameLookupTable endianess = getWhileNotEmpty $ do
+  (enc, cu_offset) <- getTableHeader endianess
+  _debug_info_length <- desrGetOffset endianess enc
+  M.fromListWith (++) <$> getNameLookupEntries endianess enc cu_offset
 
-parsePubSection :: Endianess -> TargetSize -> B.ByteString -> M.Map String [DieID]
-parsePubSection endianess target64 section =
-  M.unionsWith (++) $ strictGet (getNameLookupTable target64 der) section
-  where
-    der = endianReader endianess
+parsePubSection :: Endianess -> B.ByteString -> M.Map String [DieID]
+parsePubSection endianess section =
+  M.unionsWith (++) $ strictGet (getNameLookupTable endianess) section
 
 -- | Parses the .debug_pubnames section (as ByteString) into a map from a value name to a DieID
-parsePubnames :: Endianess -> TargetSize -> B.ByteString -> M.Map String [DieID]
+parsePubnames :: Endianess -> B.ByteString -> M.Map String [DieID]
 parsePubnames = parsePubSection
 
 -- | Parses the .debug_pubtypes section (as ByteString) into a map from a type name to a DieID
-parsePubtypes :: Endianess -> TargetSize -> B.ByteString -> M.Map String [DieID]
+parsePubtypes :: Endianess -> B.ByteString -> M.Map String [DieID]
 parsePubtypes = parsePubSection
 
 align :: Integral a => a -> Get ()
@@ -184,15 +181,15 @@ data Range = Range
 
 -- Section 7.20 - Address Range Table
 -- Returns the ranges that belong to a CU
-getAddressRangeTable :: TargetSize -> EndianReader -> Get [([Range], CUOffset)]
-getAddressRangeTable target64 der = getWhileNotEmpty $ do
-  (dr, cu_offset)   <- getTableHeader target64 der
+getAddressRangeTable :: Endianess -> Get [([Range], CUOffset)]
+getAddressRangeTable endianess = getWhileNotEmpty $ do
+  (_enc, cu_offset)   <- getTableHeader endianess
   address_size      <- getWord8
   let
     readAddress =
       case address_size of
-        4 -> fromIntegral <$> drGetW32 dr
-        8 -> drGetW64 dr
+        4 -> fromIntegral <$> derGetW32 endianess
+        8 -> derGetW64 endianess
         n -> fail $ "Unrecognized address size " ++ show n ++ " in .debug_aranges section."
   _segment_size     <- getWord8
   align $ 2 * address_size
@@ -201,11 +198,9 @@ getAddressRangeTable target64 der = getWhileNotEmpty $ do
 
 -- | Parses the .debug_aranges section (as ByteString) into a map from
 -- an address range to a DieID that indexes the Info.
-parseAranges ::
-  Endianess -> TargetSize -> B.ByteString -> [([Range], CUOffset)]
-parseAranges endianess target64 aranges_section =
-    let dr = endianReader endianess
-    in strictGet (getAddressRangeTable target64 dr) aranges_section
+parseAranges :: Endianess -> B.ByteString -> [([Range], CUOffset)]
+parseAranges endianess aranges_section =
+  strictGet (getAddressRangeTable endianess) aranges_section
 
 {-# ANN module "HLint: ignore Use camelCase" #-}
 
@@ -252,12 +247,12 @@ data DW_CIEFDE
     deriving (Eq, Ord, Read, Show)
 
 getCIEFDE :: Endianess -> TargetSize -> Get DW_CIEFDE
-getCIEFDE endianess target64 = do
-    let der    = endianReader endianess
-    (desr, endPos) <- getUnitLength der
-    let dr     = reader target64 desr
-    cie_id     <- drGetOffset dr
-    if cie_id == drLargestOffset dr then do
+getCIEFDE end target64 = do
+    (enc, size) <- getDwarfSize end
+    pos <- Get.bytesRead
+    let endPos = fromIntegral pos + size
+    cie_id     <- desrGetOffset end enc
+    if cie_id == encodingLargestOffset enc then do
         version                 <- getWord8
         augmentation            <- getUTF8Str0
         code_alignment_factor   <- getULEB128
@@ -268,19 +263,21 @@ getCIEFDE endianess target64 = do
                                     n -> fail $ "Unrecognized CIE version " ++ show n
         curPos                  <- fromIntegral <$> Get.bytesRead
         raw_instructions        <- getByteString $ fromIntegral (endPos - curPos)
-        let initial_instructions = strictGet (getWhileNotEmpty (getDW_CFA dr)) raw_instructions
+        let initial_instructions =
+              strictGet (getWhileNotEmpty (getDW_CFA end target64)) raw_instructions
         pure $ DW_CIE augmentation code_alignment_factor data_alignment_factor return_address_register initial_instructions
      else do
-        initial_location        <- drGetTargetAddress dr
-        address_range           <- drGetTargetAddress dr
+        initial_location        <- getTargetAddress end target64
+        address_range           <- getTargetAddress end target64
         curPos                  <- fromIntegral <$> Get.bytesRead
         raw_instructions        <- getByteString $ fromIntegral (endPos - curPos)
-        let instructions        = strictGet (getWhileNotEmpty (getDW_CFA dr)) raw_instructions
+        let instructions = strictGet (getWhileNotEmpty (getDW_CFA end target64)) raw_instructions
         pure $ DW_FDE cie_id initial_location address_range instructions
 
 -- | Parse the .debug_frame section into a list of DW_CIEFDE records.
-parseFrame ::
-  Endianess -> TargetSize
+parseFrame
+  :: Endianess
+  -> TargetSize
   -> B.ByteString -- ^ ByteString for the .debug_frame section.
   -> [DW_CIEFDE]
 parseFrame endianess target64 =
@@ -296,34 +293,34 @@ newtype RangeEnd = RangeEnd Word64
 parseRanges :: Reader -> B.ByteString -> [Either RangeEnd Range]
 parseRanges = strictGet . getRanges
 
-getMRange :: Reader -> Get (Maybe (Either RangeEnd Range))
-getMRange dr = do
-  begin <- drGetTargetAddress dr
-  end   <- drGetTargetAddress dr
+getMRange :: Endianess -> TargetSize -> Get (Maybe (Either RangeEnd Range))
+getMRange endian tgt = do
+  begin <- getTargetAddress endian tgt
+  end   <- getTargetAddress endian tgt
   pure $
     if begin == 0 && end == 0
     then Nothing
     else Just $
-      if begin == drLargestTargetAddress dr
+      if begin == largestTargetAddress tgt
       then Left $ RangeEnd end
       else Right $ Range begin end
 
 getRanges :: Reader -> Get [Either RangeEnd Range]
-getRanges dr = whileJust $ getMRange dr
+getRanges dr = whileJust $ getMRange (drEndianess dr) (drTarget64 dr)
 
 -- Section 7.7.3
 -- | Retrieves the location list expressions from a given substring of the .debug_loc section. The offset
 -- into the .debug_loc section is obtained from an attribute of class loclistptr for a given DIE.
 -- Left results are base address entries. Right results are address ranges and a location expression.
-parseLoc :: Reader -> B.ByteString -> [Either RangeEnd (Range, B.ByteString)]
-parseLoc dr = strictGet (getLoc dr)
+parseLoc :: Endianess -> TargetSize -> B.ByteString -> [Either RangeEnd (Range, B.ByteString)]
+parseLoc endian tgt = strictGet (getLoc endian tgt)
 
-getLoc :: Reader -> Get [Either RangeEnd (Range, B.ByteString)]
-getLoc dr = whileJust $ traverse mkRange =<< getMRange dr
+getLoc :: Endianess -> TargetSize -> Get [Either RangeEnd (Range, B.ByteString)]
+getLoc endian tgt = whileJust $ traverse mkRange =<< getMRange endian tgt
   where
     mkRange (Left end) = pure $ Left end
     mkRange (Right range) =
-      Right . (,) range <$> getByteStringLen (drGetW16 dr)
+      Right . (,) range <$> getByteStringLen (derGetW16 endian)
 
 data DIERefs = DIERefs
   { dieRefsParent       :: Maybe DieID   -- ^ Unique identifier of this entry's parent.
@@ -360,47 +357,49 @@ addRefs mParent = go Nothing
       DIERefs mParent lSibling (dieId <$> listToMaybe xs) die :
       go (Just (dieId die)) xs
 
-withToldRefs :: (Applicative m, Monad m) => Maybe DieID -> [DIE] -> DIECollector m [DIE]
+withToldRefs :: (Applicative m, Monad m) => Maybe DieID -> [DIE] -> DIECollector m ()
 withToldRefs mParent dies =
-  dies <$
-  (Writer.tell . M.fromList . map (dieId . dieRefsDIE &&& id) . addRefs mParent) dies
+  Writer.tell $ M.fromList $ map (dieId . dieRefsDIE &&& id) $ addRefs mParent dies
 
 -- Decode a non-compilation unit DWARF information entry, its children and its siblings.
 getDieAndSiblings :: DieID -> CUContext -> DIECollector Get [DIE]
-getDieAndSiblings parent cuContext =
-  withToldRefs (Just parent) =<< (whileJust . getDIEAndDescendants) cuContext
+getDieAndSiblings parent cuContext = do
+  dies <- (whileJust . getDIEAndDescendants) cuContext
+  withToldRefs (Just parent) dies
+  pure dies
 
 getForm :: CUContext -> DW_FORM -> Get DW_ATVAL
-getForm
-  cuContext@CUContext { cuReader = dr, cuOffset = cu, cuSections = dc }
-  form
-  = case form of
-    DW_FORM_addr         -> DW_ATVAL_UINT . fromIntegral <$> drGetTargetAddress dr
+getForm cuContext@CUContext { cuReader = dr, cuOffset = cu, cuSections = dc } form =
+ let end = drEndianess dr
+     enc = drEncoding dr
+     tgt = drTarget64 dr
+   in case form of
+    DW_FORM_addr         -> DW_ATVAL_UINT . fromIntegral <$> getTargetAddress end tgt
     DW_FORM_block1       -> DW_ATVAL_BLOB <$> getByteStringLen getWord8
-    DW_FORM_block2       -> DW_ATVAL_BLOB <$> getByteStringLen (drGetW16 dr)
-    DW_FORM_block4       -> DW_ATVAL_BLOB <$> getByteStringLen (drGetW32 dr)
+    DW_FORM_block2       -> DW_ATVAL_BLOB <$> getByteStringLen (derGetW16 end)
+    DW_FORM_block4       -> DW_ATVAL_BLOB <$> getByteStringLen (derGetW32 end)
     DW_FORM_block        -> DW_ATVAL_BLOB <$> getByteStringLen getULEB128
     DW_FORM_data1        -> DW_ATVAL_UINT . fromIntegral <$> getWord8
-    DW_FORM_data2        -> DW_ATVAL_UINT . fromIntegral <$> drGetW16 dr
-    DW_FORM_data4        -> DW_ATVAL_UINT . fromIntegral <$> drGetW32 dr
-    DW_FORM_data8        -> DW_ATVAL_UINT . fromIntegral <$> drGetW64 dr
+    DW_FORM_data2        -> DW_ATVAL_UINT . fromIntegral <$> derGetW16 end
+    DW_FORM_data4        -> DW_ATVAL_UINT . fromIntegral <$> derGetW32 end
+    DW_FORM_data8        -> DW_ATVAL_UINT . fromIntegral <$> derGetW64 end
     DW_FORM_udata        -> DW_ATVAL_UINT <$> getULEB128
     DW_FORM_sdata        -> DW_ATVAL_INT <$> getSLEB128
     DW_FORM_flag         -> DW_ATVAL_BOOL . (/= 0) <$> getWord8
     DW_FORM_string       -> DW_ATVAL_STRING <$> getUTF8Str0
     DW_FORM_ref1         -> DW_ATVAL_REF . inCU cu <$> getWord8
-    DW_FORM_ref2         -> DW_ATVAL_REF . inCU cu <$> drGetW16 dr
-    DW_FORM_ref4         -> DW_ATVAL_REF . inCU cu <$> drGetW32 dr
-    DW_FORM_ref8         -> DW_ATVAL_REF . inCU cu <$> drGetW64 dr
+    DW_FORM_ref2         -> DW_ATVAL_REF . inCU cu <$> derGetW16 end
+    DW_FORM_ref4         -> DW_ATVAL_REF . inCU cu <$> derGetW32 end
+    DW_FORM_ref8         -> DW_ATVAL_REF . inCU cu <$> derGetW64 end
     DW_FORM_ref_udata    -> DW_ATVAL_REF . inCU cu <$> getULEB128
-    DW_FORM_ref_addr     -> DW_ATVAL_UINT <$> drGetOffset dr
-    DW_FORM_sec_offset   -> DW_ATVAL_UINT <$> drGetOffset dr
+    DW_FORM_ref_addr     -> DW_ATVAL_UINT <$> desrGetOffset end enc
+    DW_FORM_sec_offset   -> DW_ATVAL_UINT <$> desrGetOffset end enc
     DW_FORM_exprloc      -> DW_ATVAL_BLOB <$> getByteStringLen getULEB128
     DW_FORM_flag_present -> pure $ DW_ATVAL_BOOL True
-    DW_FORM_ref_sig8     -> DW_ATVAL_UINT . fromIntegral <$> drGetW64 dr
+    DW_FORM_ref_sig8     -> DW_ATVAL_UINT . fromIntegral <$> derGetW64 end
     DW_FORM_indirect     -> getForm cuContext . dw_form =<< getULEB128
     DW_FORM_strp         -> do
-      offset <- fromIntegral <$> drGetOffset dr
+      offset <- fromIntegral <$> desrGetOffset end (drEncoding dr)
       pure . DW_ATVAL_STRING .
         getAt getUTF8Str0 offset $ dsStrSection dc
 
@@ -423,43 +422,49 @@ getDIEAndDescendants cuContext = do
   where
     dr = cuReader cuContext
 
-getCUHeader ::
-  EndianReader -> Sections ->
-  Get (CUOffset, M.Map AbbrevId DW_ABBREV, Reader)
-getCUHeader der dwarfSections = do
+getCUHeader :: Endianess
+            -> Sections
+            -> Get CUContext
+getCUHeader endian dwarfSections = do
   cu_offset       <- CUOffset . fromIntegral <$> Get.bytesRead
-  (desr, _)       <- getUnitLength der
-  _version        <- desrGetW16 desr
-  abbrev_offset   <- desrGetOffset desr
+
+  (enc, _)        <- getDwarfSize endian
+  _version        <- derGetW16 endian
+  abbrev_offset   <- desrGetOffset endian enc
   let abbrev_map   = M.fromList . map (abbrevId &&& id) .
                      getAt getAbbrevList abbrev_offset $
                      dsAbbrevSection dwarfSections
   addr_size       <- getWord8
-  dr              <- case addr_size of
-                      4 -> pure $ reader TargetSize32 desr
-                      8 -> pure $ reader TargetSize64 desr
-                      _ -> fail $ "Invalid address size: " ++ show addr_size
-  return (cu_offset, abbrev_map, dr)
+  tgt  <- case addr_size of
+            4 -> pure $ TargetSize32
+            8 -> pure $ TargetSize64
+            _ -> fail $ "Invalid address size: " ++ show addr_size
+  let ctx = CUContext { cuReader = reader endian enc tgt
+                      , cuAbbrevMap = abbrev_map
+                      , cuOffset = cu_offset
+                      , cuSections = dwarfSections
+                      }
+  return ctx
 
 -- TODO: Why not return CUs rather than DIE's?
 -- Decode the compilation unit DWARF information entries.
-getDieCus :: EndianReader -> Sections -> DIECollector Get [DIE]
-getDieCus der dwarfSections =
-  withToldRefs Nothing <=<
-  whileJust . condAct (lift Get.isEmpty) $ do
-    (cu_offset, abbrev_map, dr) <- lift $ getCUHeader der dwarfSections
-    maybe (fail "Compilation Unit must have a DIE") return =<<
-      getDIEAndDescendants CUContext
-        { cuReader = dr
-        , cuAbbrevMap = abbrev_map
-        , cuOffset = cu_offset
-        , cuSections = dwarfSections
-        }
+getDieCus :: Endianess -> Sections -> DIECollector Get [(CUContext,DIE)]
+getDieCus endianess dwarfSections = do
+  let go l = do
+        e <- lift Get.isEmpty
+        if e then
+          pure $ reverse l
+         else do
+          ctx <- lift $ getCUHeader endianess dwarfSections
+          mr <- getDIEAndDescendants ctx
+          case mr of
+            Nothing -> fail "Compilation Unit must have a DIE"
+            Just r -> go ((ctx,r) : l)
+  dies <- go []
+  withToldRefs Nothing (snd <$> dies)
+  pure dies
 
 -- | Parses the .debug_info section (as ByteString) using the .debug_abbrev and .debug_str sections.
-parseInfo :: Endianess -> Sections -> ([DIE], DIEMap)  -- ^ The die list is of compilation unit dies
-parseInfo endianess dwarfSections =
-  strictGet act $ dsInfoSection dwarfSections
-  where
-    act = runWriterT $ getDieCus dr dwarfSections
-    dr = endianReader endianess
+parseInfo :: Endianess -> Sections -> ([(CUContext,DIE)], DIEMap)  -- ^ The die list is of compilation unit dies
+parseInfo endianess dwarfSections = strictGet act $ dsInfoSection dwarfSections
+  where act = runWriterT $ getDieCus endianess dwarfSections

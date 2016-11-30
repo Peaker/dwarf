@@ -38,8 +38,9 @@ data DW_CFA
     | DW_CFA_val_offset_sf Word64 Int64
     | DW_CFA_val_expression Word64 B.ByteString
     deriving (Eq, Ord, Read, Show)
-getDW_CFA :: Reader -> Get DW_CFA
-getDW_CFA dr = do
+
+getDW_CFA :: Endianess -> TargetSize -> Get DW_CFA
+getDW_CFA end tgt = do
     tag <- getWord8
     case tag `shiftR` 6 of
         0x1 -> pure $ DW_CFA_advance_loc $ tag .&. 0x3f
@@ -47,10 +48,10 @@ getDW_CFA dr = do
         0x3 -> pure $ DW_CFA_restore $ tag .&. 0x3f
         0x0 -> case tag .&. 0x3f of
             0x00 -> pure DW_CFA_nop
-            0x01 -> pure DW_CFA_set_loc <*> drGetTargetAddress dr
+            0x01 -> pure DW_CFA_set_loc <*> getTargetAddress end tgt
             0x02 -> pure DW_CFA_advance_loc1 <*> getWord8
-            0x03 -> pure DW_CFA_advance_loc2 <*> drGetW16 dr
-            0x04 -> pure DW_CFA_advance_loc4 <*> drGetW32 dr
+            0x03 -> pure DW_CFA_advance_loc2 <*> derGetW16 end
+            0x04 -> pure DW_CFA_advance_loc4 <*> derGetW32 end
             0x05 -> pure DW_CFA_offset_extended <*> getULEB128 <*> getULEB128
             0x06 -> pure DW_CFA_restore_extended <*> getULEB128
             0x07 -> pure DW_CFA_undefined <*> getULEB128
