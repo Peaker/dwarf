@@ -22,6 +22,7 @@ module Data.Dwarf
   , module Data.Dwarf.AT
   , module Data.Dwarf.TAG
   , module Data.Dwarf.Types
+  , DW_LANG(..)
   , DW_LNE(..), parseLNE, getLNE
   , DW_ATE(..), dw_ate, get_dw_ate
   , DW_DS(..)
@@ -312,8 +313,8 @@ getRanges dr = whileJust $ getMRange (drEndianess dr) (drTarget64 dr)
 -- | Retrieves the location list expressions from a given substring of the .debug_loc section. The offset
 -- into the .debug_loc section is obtained from an attribute of class loclistptr for a given DIE.
 -- Left results are base address entries. Right results are address ranges and a location expression.
-parseLoc :: Endianess -> TargetSize -> B.ByteString -> [Either RangeEnd (Range, B.ByteString)]
-parseLoc endian tgt = strictGet (getLoc endian tgt)
+parseLoc :: Reader -> B.ByteString -> [Either RangeEnd (Range, B.ByteString)]
+parseLoc dr = strictGet (getLoc (drEndianess dr) (drTarget64 dr))
 
 getLoc :: Endianess -> TargetSize -> Get [Either RangeEnd (Range, B.ByteString)]
 getLoc endian tgt = whileJust $ traverse mkRange =<< getMRange endian tgt
