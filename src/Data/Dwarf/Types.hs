@@ -1,7 +1,11 @@
+{-# LANGUAGE PatternSynonyms #-}
 module Data.Dwarf.Types where
 
-import Data.Word (Word64)
-import Data.List (stripPrefix)
+import           Data.List (stripPrefix)
+import           Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import           Data.Word (Word64)
+import           Numeric (showHex)
 
 newtype DieID = DieID Word64
   deriving (Eq, Ord)
@@ -74,53 +78,57 @@ dw_virtuality 0x01 = DW_VIRTUALITY_virtual
 dw_virtuality 0x02 = DW_VIRTUALITY_return_virtual
 dw_virtuality tag = error $ "Invalid tag for DW_VIRTUALITY: " ++ show tag
 
-data DW_LANG
-    = DW_LANG_C89
-    | DW_LANG_C
-    | DW_LANG_Ada83
-    | DW_LANG_C_plus_plus
-    | DW_LANG_Cobol74
-    | DW_LANG_Cobol85
-    | DW_LANG_Fortran77
-    | DW_LANG_Fortran90
-    | DW_LANG_Pascal83
-    | DW_LANG_Modula2
-    | DW_LANG_Java
-    | DW_LANG_C99
-    | DW_LANG_Ada95
-    | DW_LANG_Fortran95
-    | DW_LANG_PLI
-    | DW_LANG_ObjC
-    | DW_LANG_ObjC_plus_plus
-    | DW_LANG_UPC
-    | DW_LANG_D
-    | DW_LANG_User Int -- 0x8000..0xFFFF
-    deriving (Eq, Ord, Read, Show)
-dw_lang :: Word64 -> DW_LANG
-dw_lang 0x0001 = DW_LANG_C89
-dw_lang 0x0002 = DW_LANG_C
-dw_lang 0x0003 = DW_LANG_Ada83
-dw_lang 0x0004 = DW_LANG_C_plus_plus
-dw_lang 0x0005 = DW_LANG_Cobol74
-dw_lang 0x0006 = DW_LANG_Cobol85
-dw_lang 0x0007 = DW_LANG_Fortran77
-dw_lang 0x0008 = DW_LANG_Fortran90
-dw_lang 0x0009 = DW_LANG_Pascal83
-dw_lang 0x000a = DW_LANG_Modula2
-dw_lang 0x000b = DW_LANG_Java
-dw_lang 0x000c = DW_LANG_C99
-dw_lang 0x000d = DW_LANG_Ada95
-dw_lang 0x000e = DW_LANG_Fortran95
-dw_lang 0x000f = DW_LANG_PLI
-dw_lang 0x0010 = DW_LANG_ObjC
-dw_lang 0x0011 = DW_LANG_ObjC_plus_plus
-dw_lang 0x0012 = DW_LANG_UPC
-dw_lang 0x0013 = DW_LANG_D
-dw_lang n
-  | 0x8000 <= n && n <= 0xffff =
-    DW_LANG_User $ fromIntegral n
-  | otherwise =
-    error $ "Unrecognized DW_LANG " ++ show n
+data DW_LANG = DW_LANG Word64
+  deriving (Eq, Ord)
+
+pattern DW_LANG_C89            = DW_LANG 0x0001
+pattern DW_LANG_C              = DW_LANG 0x0002
+pattern DW_LANG_Ada83          = DW_LANG 0x0003
+pattern DW_LANG_C_plus_plus    = DW_LANG 0x0004
+pattern DW_LANG_Cobol74        = DW_LANG 0x0005
+pattern DW_LANG_Cobol85        = DW_LANG 0x0006
+pattern DW_LANG_Fortran77      = DW_LANG 0x0007
+pattern DW_LANG_Fortran90      = DW_LANG 0x0008
+pattern DW_LANG_Pascal83       = DW_LANG 0x0009
+pattern DW_LANG_Modula2        = DW_LANG 0x000a
+pattern DW_LANG_Java           = DW_LANG 0x000b
+pattern DW_LANG_C99            = DW_LANG 0x000c
+pattern DW_LANG_Ada95          = DW_LANG 0x000d
+pattern DW_LANG_Fortran95      = DW_LANG 0x000e
+pattern DW_LANG_PLI            = DW_LANG 0x000f
+pattern DW_LANG_ObjC           = DW_LANG 0x0010
+pattern DW_LANG_ObjC_plus_plus = DW_LANG 0x0011
+pattern DW_LANG_UPC            = DW_LANG 0x0012
+pattern DW_LANG_D              = DW_LANG 0x0013
+
+dw_lang_name_map :: Map DW_LANG String
+dw_lang_name_map = Map.fromList
+  [ (DW_LANG_C89, "DW_LANG_C89")
+  , (DW_LANG_C, "DW_LANG_C")
+  , (DW_LANG_Ada83, "DW_LANG_Ada83")
+  , (DW_LANG_C_plus_plus, "DW_LANG_C_plus_plus")
+  , (DW_LANG_Cobol74, "DW_LANG_Cobol74")
+  , (DW_LANG_Cobol85, "DW_LANG_Cobol85")
+  , (DW_LANG_Fortran77, "DW_LANG_Fortran77")
+  , (DW_LANG_Fortran90, "DW_LANG_Fortran90")
+  , (DW_LANG_Pascal83, "DW_LANG_Pascal83")
+  , (DW_LANG_Modula2, "DW_LANG_Modula2")
+  , (DW_LANG_Java, "DW_LANG_Java")
+  , (DW_LANG_C99, "DW_LANG_C99")
+  , (DW_LANG_Ada95, "DW_LANG_Ada95")
+  , (DW_LANG_Fortran95, "DW_LANG_Fortran95")
+  , (DW_LANG_PLI, "DW_LANG_PLI")
+  , (DW_LANG_ObjC, "DW_LANG_ObjC")
+  , (DW_LANG_ObjC_plus_plus, "DW_LANG_ObjC_plus_plus")
+  , (DW_LANG_UPC, "DW_LANG_UPC")
+  , (DW_LANG_D, "DW_LANG_D")
+  ]
+
+instance Show DW_LANG where
+  showsPrec p (DW_LANG w) =
+    case Map.lookup (DW_LANG w) dw_lang_name_map of
+      Just r -> showString r
+      Nothing -> showParen (p > 10) $ showString "DW_LANG " . showHex w
 
 data DW_ID
     = DW_ID_case_sensitive
