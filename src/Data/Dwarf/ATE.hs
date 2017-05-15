@@ -38,7 +38,7 @@ get_dw_ate 0x0e = Just DW_ATE_unsigned_fixed
 get_dw_ate 0x0f = Just DW_ATE_decimal_float
 get_dw_ate _    = Nothing
 
-dw_ate :: Word64 ->DW_ATE
+dw_ate :: Word64 -> DW_ATE
 dw_ate n =
   case get_dw_ate n of
     Just r -> r
