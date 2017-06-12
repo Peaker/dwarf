@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -fno-warn-missing-signatures#-}
 module Data.Dwarf.AT where
 
 import qualified Data.ByteString as B
