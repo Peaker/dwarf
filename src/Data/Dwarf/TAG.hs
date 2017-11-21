@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -fno-warn-missing-pattern-synonym-signatures #-}
 module Data.Dwarf.TAG where
 
-import           Control.Applicative (pure)
 import           Data.Binary.Get (Get)
 import           Data.Dwarf.Utils
 import qualified Data.Map.Strict as Map

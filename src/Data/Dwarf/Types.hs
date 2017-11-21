@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -fno-warn-missing-pattern-synonym-signatures #-}
 module Data.Dwarf.Types where
 
 import           Data.List (stripPrefix)
