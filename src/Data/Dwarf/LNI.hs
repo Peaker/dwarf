@@ -1,14 +1,14 @@
 module Data.Dwarf.LNI where
 
-import Control.Monad (replicateM)
-import Data.Binary (Binary(..), Get)
-import Data.Binary.Get (getWord8)
-import Data.Dwarf.Reader
-import Data.Dwarf.Utils
-import Data.Int (Int8, Int64)
-import Data.Word (Word8, Word64)
+import           Control.Monad (replicateM)
+import           Data.Binary (Binary(..), Get)
+import           Data.Binary.Get (getWord8)
 import qualified Data.Binary.Get as Get
 import qualified Data.ByteString as B
+import           Data.Dwarf.Reader
+import           Data.Dwarf.Utils
+import           Data.Int (Int8, Int64)
+import           Data.Word (Word8, Word64)
 
 -- Section 7.21 - Line Number Information
 data DW_LNI
@@ -78,11 +78,19 @@ stepLineMachine :: Bool -> Word8 -> DW_LNE -> [DW_LNI] -> [DW_LNE]
 stepLineMachine _ _ _ [] = []
 stepLineMachine is_stmt mil lnm (DW_LNI_special addr_incr line_incr : xs) =
     let row = lnm { lnmAddress = lnmAddress lnm + addr_incr, lnmLine = lnmLine lnm + fromIntegral line_incr }
-        new = row { lnmBasicBlock = False, lnmPrologueEnd = False, lnmEpilogueBegin = False }
+        new = row { lnmDescriminator = 0
+                  , lnmBasicBlock = False
+                  , lnmPrologueEnd = False
+                  , lnmEpilogueBegin = False
+                  }
     in row : stepLineMachine is_stmt mil new xs
 stepLineMachine is_stmt mil lnm (DW_LNS_copy : xs) =
     let row = lnm
-        new = row { lnmBasicBlock = False, lnmPrologueEnd = False, lnmEpilogueBegin = False }
+        new = row { lnmDescriminator = 0
+                  , lnmBasicBlock = False
+                  , lnmPrologueEnd = False
+                  , lnmEpilogueBegin = False
+                  }
     in row : stepLineMachine is_stmt mil new xs
 stepLineMachine is_stmt mil lnm (DW_LNS_advance_pc incr : xs) =
     let new = lnm { lnmAddress = lnmAddress lnm + incr }
@@ -127,6 +135,9 @@ stepLineMachine is_stmt mil lnm (DW_LNE_set_address address : xs) =
 stepLineMachine is_stmt mil lnm (DW_LNE_define_file name dir_index time len : xs) =
     let new = lnm { lnmFiles = lnmFiles lnm ++ [(name, dir_index, time, len)] }
     in stepLineMachine is_stmt mil new xs
+stepLineMachine is_stmt mil lnm (DW_LNE_set_descriminator d : xs) =
+    let new = lnm { lnmDescriminator =  d }
+     in stepLineMachine is_stmt mil new xs
 
 data DW_LNE = DW_LNE
     { lnmAddress       :: Word64
@@ -134,6 +145,7 @@ data DW_LNE = DW_LNE
     , lnmLine          :: Word64
     , lnmColumn        :: Word64
     , lnmStatement     :: Bool
+    , lnmDescriminator :: !Word64
     , lnmBasicBlock    :: Bool
     , lnmEndSequence   :: Bool
     , lnmPrologueEnd   :: Bool
@@ -141,6 +153,7 @@ data DW_LNE = DW_LNE
     , lnmISA           :: Word64
     , lnmFiles         :: [(String, Word64, Word64, Word64)]
     } deriving (Eq, Ord, Read, Show)
+
 defaultLNE :: Bool -> [(String, Word64, Word64, Word64)] -> DW_LNE
 defaultLNE is_stmt files = DW_LNE
     { lnmAddress       = 0
@@ -148,6 +161,7 @@ defaultLNE is_stmt files = DW_LNE
     , lnmLine          = 1
     , lnmColumn        = 0
     , lnmStatement     = is_stmt
+    , lnmDescriminator = 0
     , lnmBasicBlock    = False
     , lnmEndSequence   = False
     , lnmPrologueEnd   = False
