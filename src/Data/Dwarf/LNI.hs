@@ -27,7 +27,7 @@ data DW_LNI
     | DW_LNS_set_isa Word64
     | DW_LNE_end_sequence
     | DW_LNE_set_address Word64
-    | DW_LNE_define_file String Word64 Word64 Word64
+    | DW_LNE_define_file !B.ByteString Word64 Word64 Word64
     | DW_LNE_set_descriminator !Word64
     deriving (Eq, Ord, Read, Show)
 
@@ -40,7 +40,7 @@ getDW_LNE end tgt = do
     0x02 ->
       DW_LNE_set_address <$> getTargetAddress end tgt
     0x03 ->
-      DW_LNE_define_file <$> getUTF8Str0
+      DW_LNE_define_file <$> getByteStringNul
                          <*> getULEB128
                          <*> getULEB128
                          <*> getULEB128
@@ -151,10 +151,10 @@ data DW_LNE = DW_LNE
     , lnmPrologueEnd   :: Bool
     , lnmEpilogueBegin :: Bool
     , lnmISA           :: Word64
-    , lnmFiles         :: [(String, Word64, Word64, Word64)]
+    , lnmFiles         :: [(B.ByteString, Word64, Word64, Word64)]
     } deriving (Eq, Ord, Read, Show)
 
-defaultLNE :: Bool -> [(String, Word64, Word64, Word64)] -> DW_LNE
+defaultLNE :: Bool -> [(B.ByteString, Word64, Word64, Word64)] -> DW_LNE
 defaultLNE is_stmt files = DW_LNE
     { lnmAddress       = 0
     , lnmFile          = 1
@@ -170,22 +170,29 @@ defaultLNE is_stmt files = DW_LNE
     , lnmFiles         = files
     }
 
--- | Retrieves the line information for a DIE from a given substring of the .debug_line section. The offset
--- into the .debug_line section is obtained from the DW_AT_stmt_list attribute of a DIE.
-parseLNE :: Endianess -> TargetSize -> Word64 -> B.ByteString -> ([String], [DW_LNE])
+-- | Retrieves the line information for a DIE from a given substring
+-- of the .debug_line section. The offset into the .debug_line section
+-- is obtained from the DW_AT_stmt_list attribute of a DIE.
+parseLNE :: Endianess -> TargetSize -> Word64 -> B.ByteString -> ([B.ByteString], [DW_LNE])
 parseLNE endianess target64 offset bs =
   getAt (getLNE endianess target64) offset bs
 
-getDebugLineFileNames :: Get [(String, Word64, Word64, Word64)]
-getDebugLineFileNames = whileJust $ traverse entry =<< getNonEmptyUTF8Str0
-  where
-    entry file_name = do
-      dir_index   <- getULEB128
-      last_mod    <- getULEB128
-      file_length <- getULEB128
-      pure (file_name, dir_index, last_mod, file_length)
 
-getLNE :: Endianess -> TargetSize -> Get ([String], [DW_LNE])
+
+getDebugLineFileNames :: Get [(B.ByteString, Word64, Word64, Word64)]
+getDebugLineFileNames = go []
+  where go prev = do
+          -- Read fillnames until we get a null.
+          fileName <- getByteStringNul
+          if B.null fileName then
+            pure (reverse prev)
+           else do
+            dir_index   <- getULEB128
+            last_mod    <- getULEB128
+            file_length <- getULEB128
+            go ((fileName, dir_index, last_mod, file_length):prev)
+
+getLNE :: Endianess -> TargetSize -> Get ([B.ByteString], [DW_LNE])
 getLNE endianess target64 = do
     (enc, size) <- getDwarfSize endianess
     pos <- Get.bytesRead
@@ -198,7 +205,7 @@ getLNE endianess target64 = do
     line_range                 <- getWord8
     opcode_base                <- getWord8
     _standard_opcode_lengths   <- replicateM (fromIntegral opcode_base - 1) getWord8
-    _include_directories       <- whileM (/= "") getUTF8Str0
+    _include_directories       <- whileM (\b -> not (B.null b)) getByteStringNul
     file_names                 <- getDebugLineFileNames
     curPos <- fromIntegral <$> Get.bytesRead
     -- Check if we have reached the end of the section.

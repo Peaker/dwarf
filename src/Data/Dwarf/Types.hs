@@ -6,18 +6,21 @@ import           Data.List (stripPrefix)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Word (Word64)
-import           Numeric (showHex)
+import           Numeric (readHex, showHex)
+import qualified Text.ParserCombinators.ReadP as RP
+import           Text.Read
 
+-- | The offset of a DWARF DIE entry from the dwarf info file.
 newtype DieID = DieID Word64
   deriving (Eq, Ord)
 
 instance Show DieID where
-  show (DieID x) = "DIE@" ++ show x
+  showsPrec _ (DieID x) = showString "DIE@" . showHex x
 
 instance Read DieID where
-  readsPrec p str =
+  readsPrec _ str =
     case stripPrefix "DIE@" str of
-      Just rest -> [ (DieID x, y) | (x, y) <- readsPrec p rest ]
+      Just rest -> [ (DieID x, y) | (x, y) <- readHex rest ]
       Nothing   -> []
 
 data DW_DS
@@ -27,6 +30,7 @@ data DW_DS
     | DW_DS_leading_separate
     | DW_DS_trailing_separate
     deriving (Eq, Ord, Read, Show)
+
 dw_ds :: Word64 -> DW_DS
 dw_ds 0x01 = DW_DS_unsigned
 dw_ds 0x02 = DW_DS_leading_overpunch
@@ -137,6 +141,7 @@ data DW_ID
     | DW_ID_down_case
     | DW_ID_case_insensitive
     deriving (Eq, Ord, Read, Show)
+
 dw_id :: Word64 -> DW_ID
 dw_id 0x00 = DW_ID_case_sensitive
 dw_id 0x01 = DW_ID_up_case
@@ -155,18 +160,30 @@ dw_cc 0x02 = DW_CC_program
 dw_cc 0x03 = DW_CC_nocall
 dw_cc n = error $ "Unrecognized calling convention " ++ show n
 
-data DW_INL
-    = DW_INL_not_inlined
-    | DW_INL_inlined
-    | DW_INL_declared_not_inlined
-    | DW_INL_declared_inlined
-    deriving (Eq, Ord, Read, Show)
-dw_inl :: Word64 -> DW_INL
-dw_inl 0x00 = DW_INL_not_inlined
-dw_inl 0x01 = DW_INL_inlined
-dw_inl 0x02 = DW_INL_declared_not_inlined
-dw_inl 0x03 = DW_INL_declared_inlined
-dw_inl n = error $ "Unrecognized DW_INL " ++ show n
+newtype DW_INL = DW_INL Word64
+
+pattern DW_INL_not_inlined = DW_INL 0
+pattern DW_INL_inlined = DW_INL 1
+pattern DW_INL_declared_not_inlined = DW_INL 2
+pattern DW_INL_declared_inlined = DW_INL 3
+
+
+instance Show DW_INL where
+  showsPrec _ DW_INL_not_inlined          = (++) "DW_INL_not_inlined"
+  showsPrec _ DW_INL_inlined              = (++) "DW_INL_inlined"
+  showsPrec _ DW_INL_declared_not_inlined = (++) "DW_INL_declared_not_inlined"
+  showsPrec _ DW_INL_declared_inlined     = (++) "DW_INL_declared_inlined"
+  showsPrec p (DW_INL x)                  = showParen (p >= 10) $ ("DW_INL " ++) . shows x
+
+matchConst :: String -> a -> ReadPrec a
+matchConst s x = readP_to_Prec (\_ -> x <$ RP.string s)
+
+instance Read DW_INL where
+  readPrec
+    =   matchConst "DW_INL_not_inlined"          DW_INL_not_inlined
+    <++ matchConst "DW_INL_inlined"              DW_INL_inlined
+    <++ matchConst "DW_INL_declared_not_inlined" DW_INL_declared_not_inlined
+    <++ matchConst "DW_INL_declared_inlined"     DW_INL_declared_inlined
 
 data DW_ORD
     = DW_ORD_row_major

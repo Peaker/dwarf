@@ -1,56 +1,48 @@
 module Data.Dwarf.Utils where
 
-import Control.Applicative (Applicative(..), (<$>), (*>))
-import Data.Binary.Get (getByteString, getWord8, Get, runGet)
-import Data.Bits ((.|.), shiftL, clearBit, testBit)
-import Data.Int (Int64)
-import Data.Word (Word64)
+import           Data.Binary.Get (getByteString, getWord8, Get, runGet)
 import qualified Data.Binary.Get as Get
+import           Data.Bits ((.|.), shiftL, clearBit, testBit)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.UTF8 as UTF8
+import           Data.Int (Int64)
+import           Data.Word (Word64)
 
 whileJust :: (Applicative m, Monad m) => m (Maybe a) -> m [a]
-whileJust act = go
-  where
-    go = do
-      res <- act
-      case res of
-        Nothing -> pure []
-        Just x -> (x :) <$> go
+whileJust act =
+  let go p = do
+        res <- act
+        case res of
+          Nothing -> pure (reverse p)
+          Just x -> go (x:p)
+   in go []
 
 -- Repeatedly perform the get operation until the boolean fails.
 whileM :: (Applicative m, Monad m) => (a -> Bool) -> m a -> m [a]
-whileM cond act = whileJust $ do
-  res <- act
-  pure $
-    if cond res
-    then Just res
-    else Nothing
-
-condAct :: (Applicative m, Monad m) => m Bool -> m a -> m (Maybe a)
-condAct cond act = do
-  e <- cond
-  if e
-    then pure Nothing
-    else Just <$> act
+whileM cond act =
+  let go p = do
+        x <- act
+        case cond x of
+          False -> pure (reverse p)
+          True ->  go (x:p)
+   in go []
 
 getWhileNotEmpty :: Get a -> Get [a]
-getWhileNotEmpty = whileJust . condAct Get.isEmpty
+getWhileNotEmpty act =
+  let go p = do
+        e <- Get.isEmpty
+        case e of
+          True -> pure (reverse p)
+          False -> act >>= \x -> go (x:p)
+   in go []
 
 getByteStringLen :: Integral a => Get a -> Get B.ByteString
-getByteStringLen lenGetter =
-  getByteString =<< fromIntegral <$> lenGetter
+getByteStringLen lenGetter = getByteString =<< fromIntegral <$> lenGetter
 
-getUTF8Str0 :: Get String
-getUTF8Str0 = UTF8.toString . B.pack <$> whileM (/= 0) getWord8
+getByteStringNul :: Get B.ByteString
+getByteStringNul = L.toStrict <$> Get.getLazyByteStringNul
 
-getNonEmptyUTF8Str0 :: Get (Maybe String)
-getNonEmptyUTF8Str0 = do
-  str <- getUTF8Str0
-  pure $ if null str then Nothing else Just str
-
--- Decode a signed little-endian base 128 encoded integer.
+-- | Decode a signed little-endian base 128 encoded integer.
 getSLEB128 :: Get Int64
 getSLEB128 =
     let go acc shift = do

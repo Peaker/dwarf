@@ -1,6 +1,5 @@
 module Data.Dwarf.CFA where
 
-import Control.Applicative (Applicative(..))
 import Data.Binary.Get (getWord8, Get)
 import Data.Bits (shiftR, (.&.))
 import Data.Dwarf.Reader
