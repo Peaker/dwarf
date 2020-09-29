@@ -96,10 +96,10 @@ inCU (CUOffset base) x = DieID (base + fromIntegral x)
 data Sections = Sections
   { dsInfoSection :: B.ByteString
     -- ^ @.debug_info@ contents
-  , dsArangesSection :: !B.ByteString
-    -- ^ @.debug_aranges@ contents
   , dsAbbrevSection :: B.ByteString
     -- ^ @.debug_abbrev@ contents
+  , dsArangesSection :: !B.ByteString
+    -- ^ @.debug_aranges@ contents
   , dsLineSection :: !B.ByteString
     -- ^ @.debug_line@ contents
   , dsLocSection    :: !B.ByteString
