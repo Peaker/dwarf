@@ -98,19 +98,19 @@ tryStrictGet m bs =
 tryGetUntilDone
   :: Get a
   -> B.ByteString
-  -> Either (Int64, String) [a]
+  -> Either ([a], Int64, String) [a]
 tryGetUntilDone = go [] 0
   where go :: [a]
            -> Int64
            -> Get a
            -> B.ByteString
-           -> Either (Int64, String) [a]
+           -> Either ([a], Int64, String) [a]
         go prev off m bs =
           if B.null bs then
             Right (reverse prev)
            else
             case Get.pushEndOfInput (Get.pushChunk (Get.runGetIncremental m) bs) of
-              Get.Fail _rest o msg -> Left (off + o, msg)
+              Get.Fail _rest _ msg -> Left (reverse prev, off, msg)
               Get.Partial _cont -> error $ "internal error: Get partial failed."
               Get.Done bs' o r ->
                 let nextPrev = seq r (r : prev)

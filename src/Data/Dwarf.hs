@@ -1,7 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
--- | Parses the DWARF 2 and DWARF 3 specifications at http://www.dwarfstd.org given
+-- | Parses the DWARF 2-5 specifications at http://www.dwarfstd.org given
 -- the debug sections in ByteString form.
 module Data.Dwarf
   ( -- * Encoding and target information
@@ -25,6 +25,7 @@ module Data.Dwarf
   , DIEMap
     -- * Reading utilities
   , Reader(..)
+  , reader
   , drEndianess, drEncoding
   , desrGetOffset
     -- * .debug_aranges
@@ -34,13 +35,16 @@ module Data.Dwarf
   , parsePubnames
     -- * .debug_pubtypes
   , parsePubtypes
+    -- * Call frames information
+  , module Data.Dwarf.Frame
     -- * Unclassified
   , Range(..), parseRanges, parseLoc
   , RangeEnd(..)
   , Data.Dwarf.CFA.DW_CFA(..)
+  , Data.Dwarf.CFA.CallFramePPCtx(..)
+  , Data.Dwarf.CFA.ppCFA
   , Data.Dwarf.CFA.parseCallFrameInstructions
   , DW_MACINFO(..), parseMacInfo
-  , DW_CIEFDE(..), parseFrame
   , DW_OP(..), parseDW_OP, parseDW_OPs
   , module Data.Dwarf.AT
   , module Data.Dwarf.TAG
@@ -62,13 +66,14 @@ module Data.Dwarf
 
 import           Control.Monad (forM)
 import           Data.Binary (Get)
-import           Data.Binary.Get (getWord8, getByteString)
+import           Data.Binary.Get (getWord8)
 import qualified Data.Binary.Get as Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import           Data.Dwarf.AT
 import           Data.Dwarf.ATE
 import           Data.Dwarf.CFA
+import           Data.Dwarf.Frame
 import           Data.Dwarf.Form
 import           Data.Dwarf.Internals
 import           Data.Dwarf.LNI
@@ -76,7 +81,6 @@ import           Data.Dwarf.OP
 import           Data.Dwarf.Reader
 import           Data.Dwarf.TAG
 import           Data.Dwarf.Types
-import           Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import           Data.Word (Word64)
 
@@ -321,67 +325,6 @@ getMacInfo = go []
               go (mi:prev)
             _ -> fail $ "Invalid MACINFO id: " ++ show x
 
-data DW_CIEFDE
-    = DW_CIE
-        { cieAugmentation          :: !B.ByteString
-        , cieCodeAlignmentFactor   :: Word64
-        , cieDataAlignmentFactor   :: Int64
-        , cieReturnAddressRegister :: Word64
-        , cieInitialInstructions   :: [DW_CFA]
-        }
-    | DW_FDE
-        { fdeCiePointer      :: Word64
-        , fdeInitialLocation :: Word64
-        , fdeAddressRange    :: Word64
-        , fdeInstructions    :: [DW_CFA]
-        }
-
-getCIEFDE :: Endianess -> TargetSize -> Get DW_CIEFDE
-getCIEFDE end target64 = do
-    (enc, size) <- getDwarfSize end
-    pos <- Get.bytesRead
-    let endPos = fromIntegral pos + size
-    cie_id     <- desrGetOffset end enc
-    if cie_id == encodingLargestOffset enc then do
-        version                 <- getWord8
-        augmentation            <- getByteStringNul
-        code_alignment_factor   <- getULEB128
-        data_alignment_factor   <- getSLEB128
-        return_address_register <- case version of
-                                    1 -> fromIntegral <$> getWord8
-                                    3 -> getULEB128
-                                    n -> fail $ "Unrecognized CIE version " ++ show n
-        curPos                  <- fromIntegral <$> Get.bytesRead
-        raw_instructions        <- getByteString $ fromIntegral (endPos - curPos)
-        instructions <-
-          case parseCallFrameInstructions end target64 raw_instructions of
-            Left (_, msg) -> fail msg
-            Right l -> pure l
-        pure $ DW_CIE { cieAugmentation = augmentation
-                      , cieCodeAlignmentFactor = code_alignment_factor
-                      , cieDataAlignmentFactor = data_alignment_factor
-                      , cieReturnAddressRegister = return_address_register
-                      , cieInitialInstructions = instructions
-                      }
-     else do
-        initial_location        <- getTargetAddress end target64
-        address_range           <- getTargetAddress end target64
-        curPos                  <- fromIntegral <$> Get.bytesRead
-        raw_instructions        <- getByteString $ fromIntegral (endPos - curPos)
-        instructions <-
-          case parseCallFrameInstructions end target64 raw_instructions of
-            Left (_, msg) -> fail msg
-            Right l -> pure l
-        pure $ DW_FDE cie_id initial_location address_range instructions
-
--- | Parse the .debug_frame section into a list of DW_CIEFDE records.
-parseFrame
-  :: Endianess
-  -> TargetSize
-  -> B.ByteString -- ^ ByteString for the .debug_frame section.
-  -> [DW_CIEFDE]
-parseFrame endianess target64 =
-  strictGet . getWhileNotEmpty $ getCIEFDE endianess target64
 
 newtype RangeEnd = RangeEnd Word64
                    deriving Show

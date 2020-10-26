@@ -1,13 +1,32 @@
-module Data.Dwarf.Reader where
+module Data.Dwarf.Reader
+  ( Reader
+  , reader
+  , EndianSizeReader
+  , drDesr
+  , desrEndianess
+  , drEncoding
+  , Endianess(..)
+  , Encoding(..)
+  , TargetSize(..)
+  , largestTargetAddress
+  , getDwarfSize
+  , desrGetOffset
+  , getTargetAddress
+  , derGetW16
+  , derGetW32
+  , derGetW64
+  , derGetI16
+  , derGetI32
+  , derGetI64
+  , drEndianess
+  , drTarget64
+  ) where
 
 import           Data.Binary.Get
   ( Get
   , getWord16be, getWord32be, getWord64be
   , getWord16le, getWord32le, getWord64le
   )
-import qualified Data.Binary.Get as Get
-import           Data.Bits
-import qualified Data.ByteString.Unsafe as BS
 import           Data.Int (Int16, Int32, Int64)
 import           Data.Word (Word16, Word32, Word64)
 
@@ -50,32 +69,11 @@ derGetI32 end = fromIntegral <$> derGetW32 end
 derGetI64 :: Endianess -> Get Int64
 derGetI64 end = fromIntegral <$> derGetW32 end
 
--- | Read a 3-byte value from stream.
-derGetWord3 :: Endianess -> Get Word64
-derGetWord3 end = do
-  bs <- Get.getByteString 3
-  case end of
-    LittleEndian ->
-      pure $! fromIntegral (bs `BS.unsafeIndex` 2) `shiftL` 16
-          .|. fromIntegral (bs `BS.unsafeIndex` 1) `shiftL`  8
-          .|. fromIntegral (bs `BS.unsafeIndex` 0)
-    BigEndian ->
-      pure $! fromIntegral (bs `BS.unsafeIndex` 0) `shiftL` 16
-          .|. fromIntegral (bs `BS.unsafeIndex` 1) `shiftL`  8
-          .|. fromIntegral (bs `BS.unsafeIndex` 2)
-
 -- Intermediate data structure for a partial Reader.
 data EndianSizeReader = EndianSizeReader
   { desrEndianess  :: !Endianess
   , desrEncoding :: !Encoding
   }
-
-endianSizeReader :: Encoding -> Endianess -> EndianSizeReader
-endianSizeReader enc endianess =
-  EndianSizeReader { desrEndianess = endianess
-                   , desrEncoding = enc
-                   }
-
 
 desrGetOffset :: Endianess -> Encoding -> Get Word64
 desrGetOffset endianess enc =
@@ -124,13 +122,6 @@ drEndianess = desrEndianess . drDesr
 drEncoding :: Reader -> Encoding
 drEncoding = desrEncoding . drDesr
 
-encodingLargestOffset :: Encoding -> Word64
-encodingLargestOffset Encoding64 = 2^(64::Int) - 1
-encodingLargestOffset Encoding32 = 2^(32::Int) - 1
-
-drLargestOffset :: Reader -> Word64
-drLargestOffset = encodingLargestOffset . drEncoding
-
 -- | Decode the DWARF size header entry, which specifies the encoding
 -- and the size of a DWARF subsection.
 getDwarfSize :: Endianess -> Get (Encoding, Word64)
@@ -143,12 +134,3 @@ getDwarfSize endianess = do
     pure (Encoding32, fromIntegral size)
    else
     fail $ "Invalid DWARF size: " ++ show size
-
--- Decode the DWARF size header entry, which specifies both the size
--- of a DWARF subsection and whether this section uses DWARF32 or
--- DWARF64.
-getUnitLength :: Endianess -> Get (EndianSizeReader, Word64)
-getUnitLength endianess = do
-  (enc, size) <- getDwarfSize endianess
-  pos <- Get.bytesRead
-  pure (endianSizeReader enc endianess, fromIntegral pos + size)

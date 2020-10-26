@@ -227,5 +227,5 @@ parseDW_OP :: Reader
 parseDW_OP dr = tryStrictGet (getDW_OP dr)
 
 -- | Parse a ByteString into a DWARF opcode expression (sequence of ops).
-parseDW_OPs :: Reader -> B.ByteString -> Either (Int64, String) [DW_OP]
+parseDW_OPs :: Reader -> B.ByteString -> Either ([DW_OP], Int64, String) [DW_OP]
 parseDW_OPs dr = tryGetUntilDone (getDW_OP dr)

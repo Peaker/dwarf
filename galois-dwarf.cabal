@@ -7,7 +7,7 @@ Author:        Simon Winwood, Eyal Lotem, Erik Charlebois
 Copyright:     Simon Winwood, Eyal Lotem, Erik Charlebois
 Maintainer:    Simon Winwood <sjw@galois.com>
 Stability:     unstable
-Cabal-Version: >= 1.8
+Cabal-Version: >= 1.10
 Build-Type:    Simple
 Synopsis:      Parser for DWARF debug format.
 Description:   Parser for DWARF debug format.
@@ -23,15 +23,17 @@ library
     exposed-modules:
       Data.Dwarf
       Data.Dwarf.Internals
-    other-modules:   Data.Dwarf.Types,
-                     Data.Dwarf.Reader,
-                     Data.Dwarf.Form,
-                     Data.Dwarf.LNI,
-                     Data.Dwarf.AT,
-                     Data.Dwarf.ATE,
-                     Data.Dwarf.OP,
-                     Data.Dwarf.TAG,
-                     Data.Dwarf.CFA
+    other-modules:
+      Data.Dwarf.AT,
+      Data.Dwarf.ATE,
+      Data.Dwarf.CFA,
+      Data.Dwarf.Form,
+      Data.Dwarf.Frame,
+      Data.Dwarf.LNI,
+      Data.Dwarf.OP,
+      Data.Dwarf.Reader,
+      Data.Dwarf.TAG,
+      Data.Dwarf.Types
     ghc-options:     -Wall
 
 test-suite galois-dwarf-tests
