@@ -10,6 +10,7 @@ module Data.Dwarf.Reader
   , TargetSize(..)
   , largestTargetAddress
   , getDwarfSize
+  , sizeHeaderByteCount
   , desrGetOffset
   , getTargetAddress
   , derGetW16
@@ -122,8 +123,17 @@ drEndianess = desrEndianess . drDesr
 drEncoding :: Reader -> Encoding
 drEncoding = desrEncoding . drDesr
 
+-- | Return the number of bytes in a DWARF size header with the given encoding.
+--
+-- See @getDwarfSize@ to read a size header.
+sizeHeaderByteCount  :: Encoding -> Int
+sizeHeaderByteCount Encoding32 =  4
+sizeHeaderByteCount Encoding64 = 12
+
 -- | Decode the DWARF size header entry, which specifies the encoding
 -- and the size of a DWARF subsection.
+--
+-- See @sizeHeaderByteCount@ to get the size of an encoding.
 getDwarfSize :: Endianess -> Get (Encoding, Word64)
 getDwarfSize endianess = do
   size <- derGetW32 endianess

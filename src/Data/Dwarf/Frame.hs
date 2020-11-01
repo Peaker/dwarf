@@ -1,5 +1,9 @@
 -- | Functions for extracting data from @.eh_frame_hdr@, @.eh_frame@
 -- and @.debug_frame@ sections.
+--
+-- Note.  This code has been tested on X86_64 Ubuntu systems, and
+-- seems correct for all the binaries on that system.  More testing
+-- is needed to ensure it is correct for other architectures.
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -14,12 +18,17 @@ module Data.Dwarf.Frame
   , FrameContext(..)
     -- * Common Information Entry
   , DW_CIE(..)
+  , FrameValBase(..)
   , CiePersonality(..)
+  , ciePersonality
   , getCIE
-  , encodingSize
-  , frameTotalSize
     -- * Frame Description entry
   , DW_FDE(..)
+  , fdeCiePointer
+  , fdeStartAddress
+  , fdeAddressRange
+  , fdeLsdaAddress
+  , fdeInstructions
   , FDEParseError(..)
   , getFDEAt
     -- * CIE/FDE encoding
@@ -138,7 +147,7 @@ ehFrameHdrValueSize :: TargetSize
                     -> EhFrameHdrEnc
                     -> Int
 ehFrameHdrValueSize _ DW_EH_PE_omit = 0
-ehFrameHdrValueSize sz enc = do
+ehFrameHdrValueSize sz enc =
   case enc .&. DW_EH_PE_value of
     DW_EH_PE_absptr  ->
       case sz of
@@ -194,18 +203,30 @@ getAdjustedEhFrameHdrValue end sz ehFrameAddr pcAddr enc = do
 --------------------------------------------------------------------------------
 -- Common information entries
 
--- | CIE personality data.
-data CiePersonality
-   = DirectCiePersonality !Word64
-   | IndirectCiePersonality !Word64
-   | NoCiePersonality
+data FrameValBase = IsAbsolute | IsPcRel
+
+-- | Location and encoding of CIE personality
+data CiePersonalityLoc =
+  CiePersonalityLoc { ciePerEncoding :: !EhFrameHdrEnc
+                      -- ^ Encoding of CIE personality
+                    , ciePerOffset :: !Word64
+                      -- ^ Offset within CIE of personality information.
+                    }
   deriving (Show)
+
+omitCiePersonalityLoc :: CiePersonalityLoc
+omitCiePersonalityLoc =
+  CiePersonalityLoc { ciePerEncoding = DW_EH_PE_omit
+                    , ciePerOffset = 0
+                    }
 
 -- | A Common Information Entry
 data DW_CIE =
   DW_CIE
   { cieEndianess :: !Endianess
+  , cieTargetSize :: !TargetSize
   , cieEncoding  :: !Encoding
+  , cieBytes     :: !B.ByteString
   , cieSize      :: !Word64
     -- ^ Size of CIE after initial size field.
   , cieVersion               :: !Word8
@@ -216,9 +237,9 @@ data DW_CIE =
   , cieCodeAlignmentFactor   :: !Word64
   , cieDataAlignmentFactor   :: !Int64
   , cieReturnAddressRegister :: !Word64
-  , cieLangSpecDataEnc       :: !EhFrameHdrEnc
+  , ciePersonalityLoc :: !CiePersonalityLoc
+  , cieLsdaEncoding          :: !EhFrameHdrEnc
     -- ^ Language specific data encoding
-  , ciePersonality :: !CiePersonality
   , cieFdeEncoding           :: !EhFrameHdrEnc
     -- ^ Encoding for FDE values
     --
@@ -227,31 +248,39 @@ data DW_CIE =
   , cieInitialInstructions   :: !B.ByteString
   } deriving (Show)
 
-encodingSize  :: Encoding -> Int
-encodingSize Encoding32 =  4
-encodingSize Encoding64 = 12
+-- | CIE personality data.
+data CiePersonality
+   = DirectCiePersonality !FrameValBase !Word64
+   | IndirectCiePersonality !FrameValBase !Word64
+   | NoCiePersonality
 
-
-frameTotalSize :: Encoding -> Word64 -> Word64
-frameTotalSize enc sz = fromIntegral (encodingSize enc) + sz
-
-{-
-cieFDEs :: DW_CIE -> [Either String DW_FDE]
-cieFDEs cie = V.toList $ fmap go (cieFDEBuffers cie)
-  where go fdeBytes =
-          case tryStrictGet (getFDE (cieEndianess cie) 0 0 cie) fdeBytes of
-            Left  (_, msg) -> Left msg
-            Right (_, _, fde) -> Right fde
--}
+-- | Get CIE personality
+ciePersonality :: DW_CIE -> CiePersonality
+ciePersonality cie
+    | perEnc == DW_EH_PE_omit = NoCiePersonality
+    | otherwise =
+        case tryStrictGet m (B.drop (fromIntegral off) (cieBytes cie)) of
+          Left _ -> error "internal: fdeStartAddress error"
+          Right (_,_,r) -> r
+  where loc = ciePersonalityLoc cie
+        perEnc = ciePerEncoding loc
+        off = ciePerOffset loc
+        m = do per <- getEhFrameHdrUnValue (cieEndianess cie) (cieTargetSize cie) perEnc
+               let base | perEnc .&. DW_EH_PE_pcrel /= 0 = IsPcRel
+                        | otherwise = IsAbsolute
+               pure $ if (perEnc .&. DW_EH_PE_indirect) == 0 then
+                        DirectCiePersonality base per
+                       else
+                        IndirectCiePersonality base per
 
 -- | Augmentation data from CIE
 data CIEAugmentationData =
   CIEAugmentationData { cieAugCieByteCount :: !Word64
                         -- ^ Number of bytes of data in Cie (0 for no data).
-                      , cieAugPersonality :: !CiePersonality
+                      , cieAugPersonality :: !CiePersonalityLoc
                         -- ^ Perdsonality data
-                      , cieAugLangSpecDataEnc :: !EhFrameHdrEnc
-                        -- ^ Use `DW_EH_PE_omit` if none.
+                      , cieAugLsdaEncoding :: !EhFrameHdrEnc
+                        -- ^ Language-specific data address encoding
                       , cieAugFdeEncoding :: !EhFrameHdrEnc
                         -- ^ FDE encoding
                       }
@@ -262,84 +291,102 @@ checkAugByteCount nm augByteCount augStartPos = do
   when (augByteCount /= fromIntegral (augEndPos - augStartPos)) $ do
     fail $ "Incorrect " <> nm <> " augmentation byte count: " ++ show augByteCount
 
-getCiePersonality :: Endianess
-                  -> TargetSize
-                  -> Get CiePersonality
-getCiePersonality end sz = do
+getCiePersonality :: TargetSize
+                  -> Get CiePersonalityLoc
+getCiePersonality sz = do
   perEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Personality encoding
   checkEncValid "Personality encoding" perEnc
-  when ((perEnc .&. 0x70) /= DW_EH_PE_pcrel) $ do
-    fail "Expected pcrel personality"
-  per <- getEhFrameHdrUnValue end sz perEnc
-  pure $! if (perEnc .&. DW_EH_PE_indirect) == 0 then
-            DirectCiePersonality per
-           else
-            IndirectCiePersonality per
+  -- Encoding must be absolute or pc relative.
+  when ((perEnc .&. 0x70) `notElem` [DW_EH_PE_absptr, DW_EH_PE_pcrel]) $ do
+    fail $ "Expected pcrel or absolute personality: " ++ show perEnc
+  off <- Get.bytesRead
+  Get.skip (ehFrameHdrValueSize sz perEnc)
+  pure $! CiePersonalityLoc { ciePerEncoding = perEnc
+                            , ciePerOffset = fromIntegral off
+                            }
 
-defaultLsdaEncoding :: EhFrameHdrEnc
-defaultLsdaEncoding = DW_EH_PE_sdata4 .|.  DW_EH_PE_pcrel
+-- | Get FDE encoding
+getFdeEncoding :: Get EhFrameHdrEnc
+getFdeEncoding = do
+  fdeEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get FDE encoding
+  when (fdeEnc == DW_EH_PE_omit) $ do
+    fail "Expected FDE encoding."
+  when ((fdeEnc .&. DW_EH_PE_indirect) /= 0) $ do
+    fail "Indirect FDE encodings not supported."
+  case fdeEnc .&. 0x70 of
+    DW_EH_PE_absptr -> pure ()
+    DW_EH_PE_pcrel   -> pure ()
+    _ -> fail $ "FDE encoding must be absolute or PC relative: " ++ show fdeEnc
 
-processCieAugmentation :: Endianess
-                       -> TargetSize
+  case fdeEnc .&. DW_EH_PE_value of
+    DW_EH_PE_uleb128 -> fail "Variable size FDE encodings not supported."
+    DW_EH_PE_sleb128 -> fail "Variable size FDE encodings not supported."
+    _ -> pure fdeEnc
+
+processCieAugmentation :: TargetSize
                        -> B.ByteString
                        -> Get CIEAugmentationData
-processCieAugmentation _end _sz "" = do
-  pure $! CIEAugmentationData { cieAugCieByteCount    = 0
-                              , cieAugPersonality     = NoCiePersonality
-                              , cieAugLangSpecDataEnc = DW_EH_PE_omit
-                              , cieAugFdeEncoding     = DW_EH_PE_absptr
+processCieAugmentation _sz "" = do
+  pure $! CIEAugmentationData { cieAugCieByteCount = 0
+                              , cieAugPersonality  = omitCiePersonalityLoc
+                              , cieAugLsdaEncoding = DW_EH_PE_udata4
+                              , cieAugFdeEncoding  = DW_EH_PE_absptr
                               }
-processCieAugmentation _end _sz "zR" = do
+processCieAugmentation _sz "zR" = do
   augByteCount <- getULEB128 -- Augmentation byte count
   augStartPos <- Get.bytesRead
-  fdeEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get FDE encoding
+  fdeEnc <- getFdeEncoding
   checkAugByteCount "CIE zR" augByteCount augStartPos
-  pure $! CIEAugmentationData { cieAugCieByteCount    = augByteCount
-                              , cieAugPersonality     = NoCiePersonality
-                              , cieAugLangSpecDataEnc = defaultLsdaEncoding
-                              , cieAugFdeEncoding     = fdeEnc
+  pure $! CIEAugmentationData { cieAugCieByteCount = augByteCount
+                              , cieAugPersonality  = omitCiePersonalityLoc
+                              , cieAugLsdaEncoding = DW_EH_PE_pcrel .|. DW_EH_PE_sdata4
+                              , cieAugFdeEncoding  = fdeEnc
                               }
-processCieAugmentation _end _sz "zRS" = do
+processCieAugmentation _sz "zRS" = do
   -- Note. I do not know what "s" means, so this is a copy of ZR.
   augByteCount <- getULEB128 -- Augmentation byte count
   augStartPos <- Get.bytesRead
-  fdeEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get FDE encoding
+  fdeEnc <- getFdeEncoding
   checkAugByteCount "CIE zRS" augByteCount augStartPos
-  pure $! CIEAugmentationData { cieAugCieByteCount    = augByteCount
-                              , cieAugPersonality     = NoCiePersonality
-                              , cieAugLangSpecDataEnc = defaultLsdaEncoding
-                              , cieAugFdeEncoding     = fdeEnc
+  pure $! CIEAugmentationData { cieAugCieByteCount = augByteCount
+                              , cieAugPersonality  = omitCiePersonalityLoc
+                              , cieAugLsdaEncoding = DW_EH_PE_pcrel .|. DW_EH_PE_sdata4
+                              , cieAugFdeEncoding  = fdeEnc
                               }
-processCieAugmentation end sz "zPR" = do
+processCieAugmentation sz "zPR" = do
   augByteCount <- getULEB128
   augStartPos <- Get.bytesRead
-  per <- getCiePersonality end sz
-  fdeEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get fde encoding
+  per <- getCiePersonality sz
+  fdeEnc <- getFdeEncoding
   checkAugByteCount "CIE zPLR" augByteCount augStartPos
-  pure $! CIEAugmentationData { cieAugCieByteCount    = augByteCount
-                              , cieAugPersonality     = per
-                              , cieAugLangSpecDataEnc = defaultLsdaEncoding
-                              , cieAugFdeEncoding     = fdeEnc
+  pure $! CIEAugmentationData { cieAugCieByteCount = augByteCount
+                              , cieAugPersonality  = per
+                              , cieAugLsdaEncoding = DW_EH_PE_pcrel .|. DW_EH_PE_sdata4
+                              , cieAugFdeEncoding  = fdeEnc
                               }
 
-processCieAugmentation end sz "zPLR" = do
+processCieAugmentation sz "zPLR" = do
   augByteCount <- getULEB128 -- Skip augmentation byte count
   augStartPos <- Get.bytesRead
-  per <- getCiePersonality end sz
+  per <- getCiePersonality sz
 
+  -- Get language specific data encoding.
   lsdEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get language specific data area
   checkEncValid "Language specific" lsdEnc
-  when ((lsdEnc .&. DW_EH_PE_app) /= DW_EH_PE_pcrel) $ do
-    fail $ "Expected language specific app to be PC relative: " ++ show lsdEnc
+  let allowedLsdEncs = [ DW_EH_PE_udata4
+                       , DW_EH_PE_pcrel .|. DW_EH_PE_sdata4
+                       ]
+  when (lsdEnc `notElem` allowedLsdEncs) $ do
+    fail $ "Unexpected aug lang spec data encoding: " <> show lsdEnc
 
-  fdeEnc <- EhFrameHdrEnc <$> Get.getWord8 -- Get fde encoding
+  fdeEnc <- getFdeEncoding
   checkAugByteCount "CIE zPLR" augByteCount augStartPos
   pure $! CIEAugmentationData { cieAugCieByteCount    = augByteCount
                               , cieAugPersonality     = per
-                              , cieAugLangSpecDataEnc = lsdEnc
+                              , cieAugLsdaEncoding    = lsdEnc
                               , cieAugFdeEncoding     = fdeEnc
                               }
-processCieAugmentation _end _sz aug = do
+processCieAugmentation _sz aug = do
   fail $ "Unexpected augmentation: " ++ show aug
 
 ppBytes :: B.ByteString -> String
@@ -376,7 +423,7 @@ getCIE' ctx end tgtSize bytes = flip tryStrictGet bytes $ do
     let endPos = pos + fromIntegral size
     cieId  <- desrGetOffset end enc
     when (cieId /= cieConstant ctx enc) $ do
-      fail $ "CIE ID non-zero: " ++ ppBytes (B.take (fromIntegral (frameTotalSize enc size)) bytes)
+      fail $ "CIE ID non-zero: " ++ ppBytes (B.take (sizeHeaderByteCount enc + fromIntegral size) bytes)
     version               <- Get.getWord8
     when (version `notElem` [1,3,4]) $ do
       fail $ "Unrecognized CIE version " ++ show version <> "\n"
@@ -394,7 +441,7 @@ getCIE' ctx end tgtSize bytes = flip tryStrictGet bytes $ do
       case version of
         1 -> fromIntegral <$> Get.getWord8
         _ -> getULEB128
-    augData <- processCieAugmentation end tgtSize augmentation
+    augData <- processCieAugmentation tgtSize augmentation
 
     augEndPos <- fromIntegral <$> Get.bytesRead
     -- Get augmentation data excluding size.
@@ -405,17 +452,15 @@ getCIE' ctx end tgtSize bytes = flip tryStrictGet bytes $ do
                           B.drop (augEndPos - fromIntegral augByteCount) (B.take augEndPos bytes)
 
     let fdeEnc = cieAugFdeEncoding augData
-    when (fdeEnc == DW_EH_PE_omit) $ do
-      fail "Expected FDE encoding."
-    when ((fdeEnc .&. DW_EH_PE_indirect) /= 0) $ do
-      fail "Indirect FDE encodings not supported."
 
     instructions <- do
       curPos <- fromIntegral <$> Get.bytesRead
       Get.getByteString (fromIntegral (endPos - curPos))
     let cie = DW_CIE { cieEndianess = end
+                     , cieTargetSize = tgtSize
                      , cieEncoding  = enc
                      , cieSize      = size
+                     , cieBytes = B.take (sizeHeaderByteCount enc + fromIntegral size) bytes
                      , cieVersion               = version
                      , cieAugmentation          = augmentation
                      , cieAugmentationData      = augDataBuffer
@@ -424,8 +469,8 @@ getCIE' ctx end tgtSize bytes = flip tryStrictGet bytes $ do
                      , cieCodeAlignmentFactor   = codeAlignmentFactor
                      , cieDataAlignmentFactor   = dataAlignmentFactor
                      , cieReturnAddressRegister = returnAddressRegister
-                     , cieLangSpecDataEnc = cieAugLangSpecDataEnc augData
-                     , ciePersonality     = cieAugPersonality augData
+                     , ciePersonalityLoc  = cieAugPersonality augData
+                     , cieLsdaEncoding    = cieAugLsdaEncoding augData
                      , cieFdeEncoding     = fdeEnc
                      , cieInitialInstructions = instructions
                      }
@@ -448,63 +493,129 @@ getCIE ctx end tgtSize ehFrame cieOff = do
 
 data DW_FDE =
   DW_FDE
-  { fdeEncoding :: !Encoding
+  { fdeCie   :: !DW_CIE
+    -- ^ CIE for this FDE.
+  , fdeBytes :: !B.ByteString
+    -- ^ Contents of FDE starting with (encoding/size pair)
+  , fdeEncoding :: !Encoding
+    -- ^ Encoding of FDE
   , fdeSize :: !Word64
-  , fdeCiePointer      :: !Word64
-  , fdeStartAddress  :: !Word64
-  , fdeAddressRange    :: !Word64
-  , fdeLsdaAddress     :: !(Maybe Word64)
-    -- ^ Language specific data area address.
-  , fdeInstructions    :: !B.ByteString
-  }
-  deriving (Show)
+    -- ^ Size of FDE
+  , fdeLsdaOffset      :: !Word64
+    -- ^ Offset of language specic data address relative to start of FDE.
+    --
+    -- Uses a value of `0` to indicate no offset is defined.  ^
+    -- Language specific data area address.
+  , fdeInstructionOffset  :: !Word64
+    -- ^ Offset of start of instructions relate to start of FDE.
+  } deriving (Show)
 
-getFDE' :: DW_CIE -- ^ CIE address
-        -> Encoding -- ^ Encoding of FDE
-        -> TargetSize -- ^ Address space size of taget
-        -> Int -- ^ End index
+-- | Get thepointer to the CIE.
+fdeCiePointer :: DW_FDE -> Word64
+fdeCiePointer fde =
+  let cie = fdeCie fde
+      enc = fdeEncoding fde
+      off = sizeHeaderByteCount enc
+      m = desrGetOffset (cieEndianess cie) enc
+   in case tryStrictGet m (B.drop off (fdeBytes fde)) of
+        Left _ -> error "internal: fdeStartAddress error"
+        Right (_,_,r) -> r
+
+-- | Get the starting address of code the FDE is for.
+fdeStartAddress :: DW_FDE -> Word64
+fdeStartAddress fde =
+  let cie = fdeCie fde
+      enc = fdeEncoding fde
+      off = postCieIdOffset enc
+      m = getEhFrameHdrUnValue (cieEndianess cie) (cieTargetSize cie) (cieFdeEncoding cie)
+   in case tryStrictGet m (B.drop off (fdeBytes fde)) of
+        Left _ -> error "internal: fdeStartAddress error"
+        Right (_,_,r) -> r
+
+-- | Get the number of bytes in the code this FDE represents.
+fdeAddressRange :: DW_FDE -> Word64
+fdeAddressRange fde =
+  let cie = fdeCie fde
+      enc = fdeEncoding fde
+      tgtSize = cieTargetSize cie
+      off = postCieIdOffset enc + ehFrameHdrValueSize tgtSize (cieFdeEncoding cie)
+      m = getEhFrameHdrUnValue (cieEndianess cie) tgtSize (cieFdeEncoding cie)
+   in case tryStrictGet m (B.drop off (fdeBytes fde)) of
+        Left _ -> error "internal: fdeStartAddress error"
+        Right (_,_,r) -> r
+
+
+
+-- | Retrieve value of language specific data area if defined.
+--
+-- If LSDA data is defined, this returns a pair containing the raw
+-- value stored for printing and an adjusted address with pc relative
+-- parts resolved.
+fdeLsdaAddress :: DW_FDE
+               -> Word64
+               -> Maybe (Word64, Word64)
+fdeLsdaAddress fde base
+    | off == 0 = Nothing
+    | otherwise =
+      case tryStrictGet m (B.drop off (fdeBytes fde)) of
+        Left _ -> error "internal: fdeLsdaAddress error"
+        Right (_,_,i) -> Just i
+  where cie = fdeCie fde
+        end = cieEndianess cie
+        lsdaEnc = cieLsdaEncoding cie
+        off = fromIntegral (fdeLsdaOffset fde)
+        m = do
+          v <- case lsdaEnc .&. DW_EH_PE_value of
+                 DW_EH_PE_sdata4 -> fromIntegral <$> derGetI32 end
+                 DW_EH_PE_udata4 -> fromIntegral <$> derGetW32 end
+                 _ -> error "Unexpected LSDA encoding."
+          av <- case lsdaEnc .&. DW_EH_PE_app of
+                  DW_EH_PE_absptr -> pure $ v
+                  DW_EH_PE_pcrel  -> pure $ base + fdeLsdaOffset fde + v
+                  _ -> error "Unexpected LSDA encoding."
+          pure (v,av)
+
+fdeInstructions :: DW_FDE -> B.ByteString
+fdeInstructions fde = B.drop (fromIntegral (fdeInstructionOffset fde)) (fdeBytes fde)
+
+getFDE' :: B.ByteString -- ^ .eh_frame/.debug_frame data
+        -> Word64 -- ^ Offset in frame for this FDE
+        -> DW_CIE -- ^ CIE for this FDE.
+        -> Encoding -- ^ Encoding of FDE as previously read
         -> Word64 -- ^ Size
-        -> Word64 -- CIE IDE
-       -> Get DW_FDE
-getFDE' cie enc tgtSize endPos size cieId = do
-  let end = cieEndianess cie
-  let fdeEnc = cieFdeEncoding cie
-  let ehFrameAddr = error "ehFrameOff undefined"
-  let pcAddr = 0 -- Note. Dwarfdump seems to use 0, but we should investigate this.
-  initialLocation        <- getAdjustedEhFrameHdrValue end tgtSize ehFrameAddr pcAddr fdeEnc
-  addressRange           <- getAdjustedEhFrameHdrValue end tgtSize ehFrameAddr pcAddr fdeEnc
+        -> Either (Int64, String) (B.ByteString, Int64, DW_FDE)
+getFDE' ehFrame off cie enc size = do
+  flip tryStrictGet (B.drop (fromIntegral off) ehFrame) $ do
+    let tgtSize = cieTargetSize cie
+    Get.skip (postCieIdOffset enc)
+    -- Skip start address and address range (these are read lazily)
+    Get.skip (2 * ehFrameHdrValueSize tgtSize (cieFdeEncoding cie))
 
-  -- Get LSDA address if defined.
-  mLsdaAddress <-
-    if "z" `B.isPrefixOf` cieAugmentation cie then do
-      augByteCount <- getULEB128
-      if augByteCount > 0 then do
-        augStartPos <- Get.bytesRead
-        when (augByteCount /= 4) $ fail $ "Unexpected FDE augmentation byte count: " <> show augByteCount
-        when (cieLangSpecDataEnc cie /= (DW_EH_PE_sdata4 .|.  DW_EH_PE_pcrel)) $ do
-          fail $ "Unexpected aug lang spec data encoding: " <> show (cieLangSpecDataEnc cie, augByteCount)
-
-        a <- fromIntegral <$> derGetI32 end -- getEhFrameHdrUnValue end tgtSize (cieLangSpecDataEnc cie)
-
-        checkAugByteCount "FDE" augByteCount augStartPos
-        pure $ Just a
+    -- Get offset of address if defined.
+    lsdaOff <-
+      if "z" `B.isPrefixOf` cieAugmentation cie then do
+        augByteCount <- getULEB128
+        if augByteCount > 0 then do
+          when (augByteCount /= 4) $ fail $ "Unexpected FDE augmentation byte count: " <> show augByteCount
+          -- Get offset of language specific data encoding.
+          a <- fromIntegral <$> Get.bytesRead
+          Get.skip 4
+          pure a
+         else
+          pure 0
        else
-        pure Nothing
-     else
-      pure Nothing
+        pure 0
 
-  instructions <- do
-    curPos <- fromIntegral <$> Get.bytesRead
-    Get.getByteString $ fromIntegral (endPos - curPos)
+    insnOff <- Get.bytesRead
 
-  pure $! DW_FDE { fdeEncoding = enc
-                 , fdeSize = size
-                 , fdeCiePointer = cieId
-                 , fdeStartAddress = initialLocation
-                 , fdeAddressRange    = addressRange
-                 , fdeLsdaAddress  = mLsdaAddress
-                 , fdeInstructions = instructions
-                 }
+    pure $! DW_FDE { fdeCie      = cie
+                   , fdeEncoding = enc
+                   , fdeSize     = size
+                   , fdeBytes = B.take (sizeHeaderByteCount enc + fromIntegral size) $
+                                B.drop (fromIntegral off) ehFrame
+                   , fdeLsdaOffset = lsdaOff
+                   , fdeInstructionOffset = fromIntegral insnOff
+                   }
 
 data FDEParseError
    = FDEParseError !Word64 !String
@@ -516,34 +627,36 @@ data FDEParseError
    | FDEReachedEnd
      -- ^ Reacghed the end of the file.
 
+-- | Get offset of data after CIE id in FDE.
+postCieIdOffset :: Encoding -> Int
+postCieIdOffset Encoding32 = 8  -- 4 bytes for size and 4 for cieID
+postCieIdOffset Encoding64 = 20 -- 12 bytes for size and 8 for cieID
+
 -- | Get FDE at given offset, and return new offset.
 getFDEAt :: FrameContext
-         -> TargetSize
-         -> B.ByteString -- ^ Bytes in .eh_frame
+         -> B.ByteString -- ^ Bytes in .eh_frame/.debug_frame
          -> DW_CIE -- ^ Common information entry information for this FDE
-         -> Word64 -- ^ Offset of FDE within .eh_frame
+         -> Word64 -- ^ Offset of FDE within .eh_frame/.debug_frame
          -> Either FDEParseError (DW_FDE, Word64)
-getFDEAt ctx tgtSize ehFrame cie off = do
+getFDEAt ctx ehFrame cie off = do
   let end = cieEndianess cie
   when (off == fromIntegral (B.length ehFrame)) $ do
     Left FDEReachedEnd
   when (off >= fromIntegral (B.length ehFrame)) $ do
     Left (FDEParseError off "Invalid address.")
-  (off2, (fdeEnc, size)) <-
+  (fdeEnc, size) <-
     case tryStrictGet (getDwarfSize end) (B.drop (fromIntegral off) ehFrame) of
-      Left _ ->  Left $ FDEParseError off "Failed to get dwarf size."
-      Right (_,sz,r) -> Right (off + fromIntegral sz, r)
+      Left _ ->  Left $ FDEParseError off "FDE end of frame."
+      Right (_,_,r) -> Right r
+  let sizeByteCount = sizeHeaderByteCount fdeEnc
+  let off2 = off + fromIntegral sizeByteCount
   when (size == 0) $ Left $ FDEEnd off
-  (cieIdSize, cieId) <-
+  cieId <-
     case tryStrictGet (desrGetOffset end fdeEnc) (B.drop (fromIntegral off2) ehFrame) of
-      Left _ -> Left $ FDEParseError off "Failed to cie id."
-      Right (_,sz,cieId) -> Right (fromIntegral sz, cieId)
+      Left _ -> Left $ FDEParseError off "FDE end of frame."
+      Right (_,_,cieId) -> Right cieId
   when (cieId == cieConstant ctx fdeEnc) $ Left $ FDECIE off
-  let off3 :: Int
-      off3 = fromIntegral off2 + cieIdSize
-  let remSize :: Int
-      remSize = fromIntegral size - cieIdSize
-  case tryStrictGet (getFDE' cie fdeEnc tgtSize remSize size cieId) (B.drop (fromIntegral off3) ehFrame) of
+  case getFDE' ehFrame off cie fdeEnc size of
       Left  (_, msg) -> Left $ FDEParseError off msg
       Right (_, _, r)   -> Right (r, off2 + fromIntegral size)
 
