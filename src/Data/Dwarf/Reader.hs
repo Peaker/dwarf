@@ -1,13 +1,45 @@
-module Data.Dwarf.Reader where
+module Data.Dwarf.Reader
+  ( Reader
+  , reader
+  , EndianSizeReader
+  , drDesr
+  , desrEndianess
+  , drEncoding
+  , Endianess(..)
+  , Encoding(..)
+  , TargetSize(..)
+  , largestTargetAddress
+  , getDwarfSize
+  , sizeHeaderByteCount
+  , desrGetOffset
+  , getTargetAddress
+  , derGetW16
+  , derGetW32
+  , derGetW64
+  , derGetI16
+  , derGetI32
+  , derGetI64
+  , drEndianess
+  , drTarget64
+  ) where
 
-import Data.Binary.Get (getWord16be, getWord32be, getWord64be, getWord16le, getWord32le, getWord64le, Get)
-import Data.Word (Word16, Word32, Word64)
-import qualified Data.Binary.Get as Get
+import           Data.Binary.Get
+  ( Get
+  , getWord16be, getWord32be, getWord64be
+  , getWord16le, getWord32le, getWord64le
+  )
+import           Data.Int (Int16, Int32, Int64)
+import           Data.Word (Word16, Word32, Word64)
 
+-- | Ordering bytes are encoded in buffers.
 data Endianess = LittleEndian | BigEndian
   deriving (Eq, Ord, Read, Show)
+
+-- | Encoding of buffers
 data Encoding = Encoding32 | Encoding64
   deriving (Eq, Ord, Read, Show)
+
+-- | Width of pointers in target.
 data TargetSize = TargetSize32 | TargetSize64
   deriving (Eq, Ord, Read, Show)
 
@@ -29,18 +61,20 @@ derGetW64 end =
     LittleEndian -> getWord64le
     BigEndian    -> getWord64be
 
+derGetI16 :: Endianess -> Get Int16
+derGetI16 end = fromIntegral <$> derGetW16 end
+
+derGetI32 :: Endianess -> Get Int32
+derGetI32 end = fromIntegral <$> derGetW32 end
+
+derGetI64 :: Endianess -> Get Int64
+derGetI64 end = fromIntegral <$> derGetW32 end
+
 -- Intermediate data structure for a partial Reader.
 data EndianSizeReader = EndianSizeReader
   { desrEndianess  :: !Endianess
   , desrEncoding :: !Encoding
   }
-
-endianSizeReader :: Encoding -> Endianess -> EndianSizeReader
-endianSizeReader enc endianess =
-  EndianSizeReader { desrEndianess = endianess
-                   , desrEncoding = enc
-                   }
-
 
 desrGetOffset :: Endianess -> Encoding -> Get Word64
 desrGetOffset endianess enc =
@@ -53,17 +87,21 @@ instance Show EndianSizeReader where
 
 -- | Type containing functions and data needed for decoding DWARF information.
 data Reader = Reader
-    { drDesr                  :: EndianSizeReader
-    , drTarget64              :: TargetSize
+    { drDesr                  :: !EndianSizeReader
+    , drTarget64              :: !TargetSize
     }
 
 instance Show Reader where
     show dr = "Reader " ++ show (drDesr dr) ++ " " ++ show (drTarget64 dr)
 
 reader :: Endianess -> Encoding -> TargetSize -> Reader
-reader endianess enc tgt = Reader { drDesr = endianSizeReader enc endianess
-                                  , drTarget64 = tgt
-                                  }
+reader endianess enc tgt =
+  let esr = EndianSizeReader { desrEndianess = endianess
+                             , desrEncoding = enc
+                             }
+   in Reader { drDesr = esr
+             , drTarget64 = tgt
+             }
 
 -- | Largest permissible target address.
 largestTargetAddress :: TargetSize -> Word64
@@ -85,41 +123,24 @@ drEndianess = desrEndianess . drDesr
 drEncoding :: Reader -> Encoding
 drEncoding = desrEncoding . drDesr
 
-{-
-drGetW32 :: Reader -> Get Word32
-drGetW32 = derGetW32 . drEndianess
-
-drGetW64 :: Reader -> Get Word64
-drGetW64 = derGetW64 . drEndianess
-
-drGetOffset :: Reader -> Get Word64
-drGetOffset dr = desrGetOffset (drEndianess dr) (drEncoding dr)
--}
-
-encodingLargestOffset :: Encoding -> Word64
-encodingLargestOffset Encoding64 = 2^(64::Int) - 1
-encodingLargestOffset Encoding32 = 2^(32::Int) - 1
-
-drLargestOffset :: Reader -> Word64
-drLargestOffset = encodingLargestOffset . drEncoding
+-- | Return the number of bytes in a DWARF size header with the given encoding.
+--
+-- See @getDwarfSize@ to read a size header.
+sizeHeaderByteCount  :: Encoding -> Int
+sizeHeaderByteCount Encoding32 =  4
+sizeHeaderByteCount Encoding64 = 12
 
 -- | Decode the DWARF size header entry, which specifies the encoding
 -- and the size of a DWARF subsection.
+--
+-- See @sizeHeaderByteCount@ to get the size of an encoding.
 getDwarfSize :: Endianess -> Get (Encoding, Word64)
 getDwarfSize endianess = do
   size <- derGetW32 endianess
   if size == 0xffffffff then do
-        size64 <- derGetW64 endianess
-        pure (Encoding64, size64)
-     else
-      if size < 0xffffff00 then do
-        pure (Encoding32, fromIntegral size)
-      else
-        fail $ "Invalid DWARF size: " ++ show size
-
--- Decode the DWARF size header entry, which specifies both the size of a DWARF subsection and whether this section uses DWARF32 or DWARF64.
-getUnitLength :: Endianess -> Get (EndianSizeReader, Word64)
-getUnitLength endianess = do
-  (enc, size) <- getDwarfSize endianess
-  pos <- Get.bytesRead
-  pure (endianSizeReader enc endianess, fromIntegral pos + size)
+    size64 <- derGetW64 endianess
+    pure (Encoding64, size64)
+   else if size < 0xffffff00 then do
+    pure (Encoding32, fromIntegral size)
+   else
+    fail $ "Invalid DWARF size: " ++ show size

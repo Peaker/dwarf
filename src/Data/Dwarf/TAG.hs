@@ -3,7 +3,7 @@
 module Data.Dwarf.TAG where
 
 import           Data.Binary.Get (Get)
-import           Data.Dwarf.Utils
+import           Data.Dwarf.Internals
 import qualified Data.Map.Strict as Map
 import           Data.Word (Word64)
 import           Numeric (showHex)
