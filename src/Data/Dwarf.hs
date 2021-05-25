@@ -44,6 +44,7 @@ module Data.Dwarf
   , Data.Dwarf.CFA.CallFramePPCtx(..)
   , Data.Dwarf.CFA.ppCFA
   , Data.Dwarf.CFA.parseCallFrameInstructions
+  , Data.Dwarf.CFA.ppX86CallFrameReg
   , DW_MACINFO(..), parseMacInfo
   , DW_OP(..), parseDW_OP, parseDW_OPs
   , module Data.Dwarf.AT

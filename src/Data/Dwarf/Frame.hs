@@ -260,7 +260,7 @@ ciePersonality cie
     | perEnc == DW_EH_PE_omit = NoCiePersonality
     | otherwise =
         case tryStrictGet m (B.drop (fromIntegral off) (cieBytes cie)) of
-          Left _ -> error "internal: fdeStartAddress error"
+          Left _ -> error "internal: ciePersonality error"
           Right (_,_,r) -> r
   where loc = ciePersonalityLoc cie
         perEnc = ciePerEncoding loc
@@ -495,6 +495,8 @@ data DW_FDE =
   DW_FDE
   { fdeCie   :: !DW_CIE
     -- ^ CIE for this FDE.
+    -- | Offset in frame for this FDE
+  , fdeOff   :: !Word64
   , fdeBytes :: !B.ByteString
     -- ^ Contents of FDE starting with (encoding/size pair)
   , fdeEncoding :: !Encoding
@@ -518,7 +520,7 @@ fdeCiePointer fde =
       off = sizeHeaderByteCount enc
       m = desrGetOffset (cieEndianess cie) enc
    in case tryStrictGet m (B.drop off (fdeBytes fde)) of
-        Left _ -> error "internal: fdeStartAddress error"
+        Left _ -> error "internal: fdeCiePointer error"
         Right (_,_,r) -> r
 
 -- | Get the starting address of code the FDE is for.
@@ -530,7 +532,10 @@ fdeStartAddress fde =
       m = getEhFrameHdrUnValue (cieEndianess cie) (cieTargetSize cie) (cieFdeEncoding cie)
    in case tryStrictGet m (B.drop off (fdeBytes fde)) of
         Left _ -> error "internal: fdeStartAddress error"
-        Right (_,_,r) -> r
+        Right (_,_,r) ->
+          case cieVersion cie of
+            1 -> r + fdeOff fde + 8
+            _ -> r
 
 -- | Get the number of bytes in the code this FDE represents.
 fdeAddressRange :: DW_FDE -> Word64
@@ -541,10 +546,8 @@ fdeAddressRange fde =
       off = postCieIdOffset enc + ehFrameHdrValueSize tgtSize (cieFdeEncoding cie)
       m = getEhFrameHdrUnValue (cieEndianess cie) tgtSize (cieFdeEncoding cie)
    in case tryStrictGet m (B.drop off (fdeBytes fde)) of
-        Left _ -> error "internal: fdeStartAddress error"
+        Left _ -> error "internal: fdeAddressRange error"
         Right (_,_,r) -> r
-
-
 
 -- | Retrieve value of language specific data area if defined.
 --
@@ -609,6 +612,7 @@ getFDE' ehFrame off cie enc size = do
     insnOff <- Get.bytesRead
 
     pure $! DW_FDE { fdeCie      = cie
+                   , fdeOff      = off
                    , fdeEncoding = enc
                    , fdeSize     = size
                    , fdeBytes = B.take (sizeHeaderByteCount enc + fromIntegral size) $
