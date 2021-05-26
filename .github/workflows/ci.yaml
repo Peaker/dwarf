@@ -20,9 +20,9 @@ jobs:
         submodules: true
     - name: Get GHC
       run: |
-        sudo apt-get install --no-install-recommends -y cabal-install-3.2 ghc-${{ matrix.ghc-ver }}
-        echo "/opt/cabal/bin" >> $GITHUB_PATH
-        echo "/opt/ghc/${{ matrix.ghc-ver }}/bin" >> $GITHUB_PATH
+        ghcup install ghc ${{ matrix.ghc-ver }}
+        ghcup install cabal 3.4.0.0
+        ghcup set ghc ${{ matrix.ghc-ver }}
     - name: Cache
       uses: actions/cache@v1
       with:
@@ -38,9 +38,7 @@ jobs:
         ln -s cabal.project.dist.freeze.ghc-${{ matrix.ghc-ver }} cabal.project.freeze
     - name: Cabal update
       run: cabal update
-      # Build macaw-base dependencies and crucible separately just so later
-      # steps are less verbose and major dependency failures are separate.
-    - name: Cabal dependencies
+    - name: Cabal build
       run: cabal build
     - name: Cabal test
       run: cabal test
