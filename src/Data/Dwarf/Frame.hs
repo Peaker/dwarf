@@ -17,7 +17,7 @@ module Data.Dwarf.Frame
     -- * Context
   , FrameContext(..)
     -- * Common Information Entry
-  , DW_CIE(..)
+  , DW_CIE
   , FrameValBase(..)
   , CiePersonality(..)
   , ciePersonality
