@@ -74,17 +74,6 @@ module Data.Dwarf
     DW_LNE (..),
     parseLNE,
     getLNE,
-    --  , DW_ACCESS(..)
-    --, DW_CC(..)
-    --  , DW_DS(..)
-    --  , DW_DSC(..)
-    --  , DW_END(..)
-    -- , DW_LANG(..)
-    -- , DW_VIS(..)
-    -- , DW_VIRTUALITY(..)
-    -- , DW_ID(..)
-    -- , DW_INL(..)
-    --  , DW_ORD(..)
   )
 where
 
